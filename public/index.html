@@ -1,0 +1,905 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Ship It</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap');
+
+:root {
+  --paper: #FAF8F2;
+  --bone: #F4F1EA;
+  --rule: #DAD4C4;
+  --rule-soft: #E8E2D2;
+  --ink: #0E1116;
+  --fog: #6E7889;
+  --ember: #C84A1F;
+  --ember-soft: #F2D9CC;
+  --olive: #6B7B4F;
+  --olive-soft: #e8ece3;
+  --indigo: #2C3E6E;
+  --indigo-soft: rgba(44, 62, 110, 0.08);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-input: inset 0 1px 2px rgba(14, 17, 22, 0.04);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+
+.si-app {
+  font-family: 'Inter Tight', sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+  min-height: 100vh;
+  padding: 32px 20px 60px;
+}
+
+.si-app h1, .si-app h2, .si-app h3 {
+  font-family: 'Newsreader', serif;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.si-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.si-wrap {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.si-eyebrow {
+  color: var(--fog);
+  font-size: 0.85rem;
+  margin: 0 0 6px;
+}
+
+.si-header h1 {
+  font-size: 1.9rem;
+  line-height: 1.15;
+}
+
+.si-header {
+  margin-bottom: 28px;
+}
+
+.si-card {
+  background: var(--bone);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 24px;
+}
+
+.si-card + .si-card { margin-top: 20px; }
+
+/* landing */
+.si-role-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.si-role-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 20px 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .05s;
+  font-family: inherit;
+}
+
+.si-role-btn:hover { border-color: var(--indigo); background: var(--indigo-soft); }
+.si-role-btn:active { transform: translateY(1px); }
+
+.si-role-btn .si-role-title {
+  font-family: 'Newsreader', serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.si-role-btn .si-role-sub {
+  color: var(--fog);
+  font-size: 0.85rem;
+}
+
+/* team list */
+.si-team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.si-team-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+  font-family: inherit;
+  width: 100%;
+  text-align: left;
+}
+
+.si-team-row:hover { border-color: var(--indigo); }
+.si-team-row.claimed { background: var(--bone); }
+
+.si-team-row-fac {
+  cursor: default;
+}
+.si-team-row-fac:hover { border-color: var(--rule); }
+
+.si-team-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.si-fac-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.si-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--fog);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+}
+.si-icon-btn:hover { color: var(--ink); border-color: var(--fog); }
+
+.si-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid var(--rule);
+  color: var(--fog);
+  flex-shrink: 0;
+}
+
+.si-pill.open { border-color: var(--olive); color: var(--olive); background: var(--olive-soft); }
+.si-pill.taken { border-color: var(--fog); color: var(--fog); }
+
+.si-empty {
+  text-align: center;
+  color: var(--fog);
+  font-size: 0.9rem;
+  padding: 20px 0;
+}
+
+/* buttons */
+.si-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  border: none;
+  transition: transform .05s, opacity .15s, background .15s;
+}
+.si-btn:active { transform: translateY(1px); }
+.si-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.si-btn:disabled:active { transform: none; }
+.si-btn-primary { background: var(--ember); color: #fff; }
+.si-btn-primary:hover:not(:disabled) { background: #a83c18; }
+.si-btn-secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--rule); }
+.si-btn-secondary:hover:not(:disabled) { background: var(--bone); border-color: var(--fog); }
+.si-btn-ghost { background: transparent; color: var(--fog); border: 1px solid var(--rule); font-weight: 500; }
+.si-btn-ghost:hover { color: var(--ink); border-color: var(--fog); }
+
+.si-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  align-items: center;
+}
+
+/* roster editor */
+.si-add-team-row {
+  display: flex;
+  gap: 10px;
+}
+
+.si-text-input {
+  flex: 1;
+  padding: 11px 14px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-input);
+}
+.si-text-input:focus { outline: none; border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-soft); }
+
+.si-text-input-inline {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: inherit;
+  border: 1px solid var(--indigo);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.si-text-input-inline:focus { outline: none; }
+
+/* claim banner */
+.si-notice {
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ember);
+  background: var(--ember-soft);
+  color: var(--ink);
+  font-size: 0.88rem;
+  margin-bottom: 16px;
+}
+
+.si-notice .si-notice-title { font-weight: 600; margin-bottom: 4px; }
+
+/* status row */
+.si-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fog);
+  font-size: 0.8rem;
+  margin-bottom: 18px;
+}
+
+.si-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--olive);
+  flex-shrink: 0;
+}
+
+/* team view stub */
+.si-you-are {
+  font-family: 'Newsreader', serif;
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 4px 0 0;
+}
+
+.si-footer-note {
+  margin-top: 28px;
+  text-align: center;
+}
+
+.si-back-link {
+  background: none;
+  border: none;
+  color: var(--fog);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: underline dotted var(--rule);
+  text-underline-offset: 3px;
+  font-family: inherit;
+  padding: 4px;
+}
+.si-back-link:hover { color: var(--ink); }
+
+.si-pin-input {
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 1.6rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-input);
+}
+.si-pin-input:focus { outline: none; border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-soft); }
+
+.si-pin-error {
+  color: var(--ember);
+  font-size: 0.85rem;
+  margin: 10px 0 0;
+}
+
+.si-dev-reset {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  font-size: 0.7rem;
+  padding: 6px 10px;
+  border-radius: 100px;
+  border: 1px solid var(--rule);
+  background: var(--bone);
+  color: var(--fog);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.6;
+}
+.si-dev-reset:hover { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="shipit-root">
+  <div class="si-app">
+    <div class="si-wrap" id="si-view"></div>
+  </div>
+  <button class="si-dev-reset" id="si-dev-reset" title="Clear this device's cached role (testing only)">clear local role</button>
+</div>
+
+<script>
+(function () {
+  const DEVICE_ID_KEY = 'device:id';
+  const DEVICE_ROLE_KEY = 'device:role';
+  const POLL_MS = 2500;
+  const FACILITATOR_PIN = '2358';
+
+  let deviceId = null;
+  let pollTimer = null;
+  let currentScreen = null; // { name, teamId }
+
+  const view = document.getElementById('si-view');
+
+  function uid() {
+    return 'dev-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  function slugify(name) {
+    const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    return (base || 'team') + '-' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------- Local (device-only) storage — never leaves the browser ----------
+
+  function localGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function localSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) {}
+  }
+  function localRemove(key) {
+    try { localStorage.removeItem(key); } catch (e) {}
+  }
+
+  // ---------- Shared storage — backed by /api/kv (Vercel KV) ----------
+
+  async function sharedGet(key) {
+    const res = await fetch('/api/kv?key=' + encodeURIComponent(key));
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('kv get failed: ' + res.status);
+    const data = await res.json();
+    return data.value;
+  }
+
+  async function sharedSet(key, value) {
+    const res = await fetch('/api/kv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value })
+    });
+    if (!res.ok) throw new Error('kv set failed: ' + res.status);
+  }
+
+  async function sharedDelete(key) {
+    try {
+      await fetch('/api/kv?key=' + encodeURIComponent(key), { method: 'DELETE' });
+    } catch (e) {}
+  }
+
+  // ---------- Device identity + cached role ----------
+
+  async function getDeviceId() {
+    if (deviceId) return deviceId;
+    let id = localGet(DEVICE_ID_KEY);
+    if (!id) {
+      id = uid();
+      localSet(DEVICE_ID_KEY, id);
+    }
+    deviceId = id;
+    return deviceId;
+  }
+
+  async function getCachedRole() {
+    const raw = localGet(DEVICE_ROLE_KEY);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+
+  async function setCachedRole(roleObj) {
+    localSet(DEVICE_ROLE_KEY, JSON.stringify(roleObj));
+  }
+
+  async function clearCachedRole() {
+    localRemove(DEVICE_ROLE_KEY);
+  }
+
+  // ---------- Room state ----------
+
+  async function getRoomState() {
+    try { return await sharedGet('room:state'); } catch (e) { return null; }
+  }
+
+  async function setRoomState(state) {
+    await sharedSet('room:state', state);
+  }
+
+  async function openRoom() {
+    const state = (await getRoomState()) || { phase: 'LOBBY' };
+    state.opened = true;
+    await setRoomState(state);
+    return state;
+  }
+
+  // ---------- Teams ----------
+
+  async function getTeams() {
+    try {
+      const t = await sharedGet('room:teams');
+      return t || [];
+    } catch (e) { return []; }
+  }
+
+  async function setTeams(teams) {
+    await sharedSet('room:teams', teams);
+  }
+
+  async function addTeam(name) {
+    const teams = await getTeams();
+    const team = { id: slugify(name), name: name };
+    teams.push(team);
+    await setTeams(teams);
+    return team;
+  }
+
+  async function removeTeam(teamId) {
+    const teams = await getTeams();
+    const next = teams.filter(t => t.id !== teamId);
+    await setTeams(next);
+    await sharedDelete('team:' + teamId + ':claim');
+  }
+
+  async function renameTeam(teamId, newName) {
+    const teams = await getTeams();
+    const next = teams.map(t => (t.id === teamId ? { ...t, name: newName } : t));
+    await setTeams(next);
+  }
+
+  async function getClaim(teamId) {
+    try { return await sharedGet('team:' + teamId + ':claim'); } catch (e) { return null; }
+  }
+
+  async function setClaim(teamId, dId) {
+    await sharedSet('team:' + teamId + ':claim', { deviceId: dId, claimedAt: Date.now() });
+  }
+
+  // ---------- Polling ----------
+
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function startPolling(fn) {
+    stopPolling();
+    pollTimer = setInterval(fn, POLL_MS);
+  }
+
+  // ---------- Screens ----------
+
+  async function renderLanding() {
+    stopPolling();
+    currentScreen = { name: 'landing' };
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Ship It — classroom room</p>
+        <h1>Join the room</h1>
+      </div>
+      <div class="si-role-grid">
+        <button class="si-role-btn" id="si-join-team">
+          <span class="si-role-title">Join as My Team</span>
+          <span class="si-role-sub">Pick your team from the roster</span>
+        </button>
+      </div>
+    `;
+    document.getElementById('si-join-team').onclick = renderTeamPicker;
+  }
+
+  function renderFacilitatorPinGate(errorMsg) {
+    stopPolling();
+    currentScreen = { name: 'facilitator-pin' };
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Facilitator</p>
+        <h1>Enter the room PIN</h1>
+      </div>
+      <div class="si-card">
+        <input class="si-pin-input" id="si-pin-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="••••" />
+        ${errorMsg ? `<p class="si-pin-error">${escapeHtml(errorMsg)}</p>` : ''}
+        <div class="si-actions">
+          <button class="si-btn si-btn-primary" id="si-pin-submit">Enter</button>
+        </div>
+      </div>
+    `;
+    const input = document.getElementById('si-pin-input');
+    input.focus();
+    const submit = () => checkPin(input.value);
+    document.getElementById('si-pin-submit').onclick = submit;
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  }
+
+  async function checkPin(value) {
+    if (value !== FACILITATOR_PIN) {
+      renderFacilitatorPinGate('Wrong PIN — try again.');
+      return;
+    }
+    await joinAsFacilitator();
+  }
+
+  async function joinAsFacilitator() {
+    let state = await getRoomState();
+    if (!state) {
+      state = { phase: 'LOBBY', opened: false };
+      await setRoomState(state);
+    }
+    await setCachedRole({ role: 'facilitator', pinPassed: true });
+    renderFacilitatorDashboard();
+  }
+
+  // ---- Facilitator dashboard (Phase 2: roster setup + start room) ----
+
+  async function renderFacilitatorDashboard() {
+    currentScreen = { name: 'facilitator' };
+    const state = (await getRoomState()) || { phase: 'LOBBY', opened: false };
+    const teams = await getTeams();
+
+    view.innerHTML = `
+      <div class="si-status-row"><span class="si-status-dot"></span> live · polling every ${POLL_MS / 1000}s</div>
+      <div class="si-header">
+        <p class="si-eyebrow">Facilitator</p>
+        <h1>${state.opened ? 'Room open for sign-in' : 'Setting up the room'}</h1>
+      </div>
+
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:12px;">Add a team</p>
+        <div class="si-add-team-row">
+          <input class="si-text-input" id="si-new-team-input" type="text" placeholder="Team name" maxlength="30" />
+          <button class="si-btn si-btn-secondary" id="si-add-team-btn">Add</button>
+        </div>
+      </div>
+
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:12px;">Roster — <span class="si-mono">${teams.length}</span> team${teams.length === 1 ? '' : 's'}</p>
+        <div class="si-team-list" id="si-fac-team-list"></div>
+      </div>
+
+      <div class="si-actions">
+        ${
+          state.opened
+            ? `<span class="si-pill open" style="padding:8px 14px;">Room is open — teams can join</span>`
+            : `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`
+        }
+      </div>
+
+      <div class="si-footer-note">
+        <button class="si-back-link" id="si-back">← leave this view</button>
+      </div>
+    `;
+
+    document.getElementById('si-back').onclick = renderLanding;
+
+    document.getElementById('si-add-team-btn').onclick = onAddTeam;
+    document.getElementById('si-new-team-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') onAddTeam();
+    });
+
+    const startBtn = document.getElementById('si-start-room');
+    if (startBtn) {
+      startBtn.onclick = async () => {
+        await openRoom();
+        renderFacilitatorDashboard();
+      };
+    }
+
+    await refreshFacilitatorTeamList(teams);
+
+    startPolling(async () => {
+      if (currentScreen.name !== 'facilitator') return;
+      const t = await getTeams();
+      await refreshFacilitatorTeamList(t);
+    });
+  }
+
+  async function onAddTeam() {
+    const input = document.getElementById('si-new-team-input');
+    const name = input.value.trim();
+    if (!name) return;
+    input.disabled = true;
+    await addTeam(name);
+    input.value = '';
+    input.disabled = false;
+    input.focus();
+    renderFacilitatorDashboard();
+  }
+
+  async function refreshFacilitatorTeamList(teams) {
+    const list = document.getElementById('si-fac-team-list');
+    if (!list) return;
+
+    if (!teams.length) {
+      list.innerHTML = `<div class="si-empty">No teams on the roster yet — add one above.</div>`;
+      return;
+    }
+
+    const claims = await Promise.all(teams.map(t => getClaim(t.id)));
+
+    list.innerHTML = teams.map((t, i) => {
+      const claim = claims[i];
+      const pill = claim
+        ? `<span class="si-pill taken">claimed</span>`
+        : `<span class="si-pill open">open</span>`;
+      return `<div class="si-team-row si-team-row-fac" data-team-id="${t.id}">
+        <span class="si-team-name" data-role="name">${escapeHtml(t.name)}</span>
+        <span class="si-fac-row-actions">
+          ${pill}
+          <button class="si-icon-btn" data-action="rename" title="Rename team">✎</button>
+          <button class="si-icon-btn" data-action="remove" title="Remove team">✕</button>
+        </span>
+      </div>`;
+    }).join('');
+
+    teams.forEach(t => {
+      const row = list.querySelector(`[data-team-id="${t.id}"]`);
+      if (!row) return;
+      row.querySelector('[data-action="rename"]').onclick = () => startInlineRename(row, t);
+      row.querySelector('[data-action="remove"]').onclick = () => onRemoveTeam(t);
+    });
+  }
+
+  function startInlineRename(row, team) {
+    const nameSpan = row.querySelector('[data-role="name"]');
+    const input = document.createElement('input');
+    input.className = 'si-text-input-inline';
+    input.value = team.name;
+    input.maxLength = 30;
+    nameSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const commit = async () => {
+      if (settled) return;
+      settled = true;
+      const val = input.value.trim();
+      if (val && val !== team.name) {
+        await renameTeam(team.id, val);
+      }
+      const t = await getTeams();
+      await refreshFacilitatorTeamList(t);
+    };
+    const cancel = async () => {
+      if (settled) return;
+      settled = true;
+      const t = await getTeams();
+      await refreshFacilitatorTeamList(t);
+    };
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') cancel();
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  async function onRemoveTeam(team) {
+    const claim = await getClaim(team.id);
+    if (claim) {
+      const ok = confirm(`${team.name} has already been claimed by a device. Remove them from the roster anyway?`);
+      if (!ok) return;
+    }
+    await removeTeam(team.id);
+    const t = await getTeams();
+    await refreshFacilitatorTeamList(t);
+    // keep the header/start-room button state (team count) in sync
+    const state = (await getRoomState()) || { phase: 'LOBBY', opened: false };
+    if (!state.opened) renderFacilitatorDashboard();
+  }
+
+  // ---- Team join flow ----
+
+  async function renderTeamPicker() {
+    currentScreen = { name: 'team-picker' };
+    stopPolling();
+    const state = await getRoomState();
+    const teams = await getTeams();
+
+    if (!state || !state.opened || !teams.length) {
+      view.innerHTML = `
+        <div class="si-header">
+          <p class="si-eyebrow">Join as My Team</p>
+          <h1>Waiting for the facilitator to open the room.</h1>
+        </div>
+        <div class="si-footer-note">
+          <button class="si-back-link" id="si-back">← back</button>
+        </div>
+      `;
+      document.getElementById('si-back').onclick = renderLanding;
+      startPolling(async () => {
+        if (currentScreen.name !== 'team-picker') return;
+        const s = await getRoomState();
+        const t = await getTeams();
+        if (s && s.opened && t.length) renderTeamPicker();
+      });
+      return;
+    }
+
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Join as My Team</p>
+        <h1>Pick your team</h1>
+      </div>
+      <div class="si-card">
+        <div class="si-team-list" id="si-team-picker-list"></div>
+      </div>
+      <div class="si-footer-note">
+        <button class="si-back-link" id="si-back">← back</button>
+      </div>
+    `;
+    document.getElementById('si-back').onclick = renderLanding;
+    await renderTeamPickerList(teams);
+    startPolling(async () => {
+      if (currentScreen.name !== 'team-picker') return;
+      const t = await getTeams();
+      await renderTeamPickerList(t);
+    });
+  }
+
+  async function renderTeamPickerList(teams) {
+    const list = document.getElementById('si-team-picker-list');
+    if (!list) return;
+    const claims = await Promise.all(teams.map(t => getClaim(t.id)));
+    list.innerHTML = teams.map((t, i) => {
+      const claim = claims[i];
+      const pill = claim
+        ? `<span class="si-pill taken">taken</span>`
+        : `<span class="si-pill open">open</span>`;
+      return `<button class="si-team-row${claim ? ' claimed' : ''}" data-team-id="${t.id}"><span class="si-team-name">${escapeHtml(t.name)}</span>${pill}</button>`;
+    }).join('');
+    teams.forEach(t => {
+      const el = list.querySelector(`[data-team-id="${t.id}"]`);
+      if (el) el.onclick = () => attemptClaim(t);
+    });
+  }
+
+  async function attemptClaim(team) {
+    const dId = await getDeviceId();
+    const claim = await getClaim(team.id);
+    if (claim && claim.deviceId !== dId) {
+      renderOverrideNotice(team, claim);
+      return;
+    }
+    await setClaim(team.id, dId);
+    await setCachedRole({ role: 'team', teamId: team.id, teamName: team.name });
+    renderTeamStub(team.id, team.name);
+  }
+
+  function renderOverrideNotice(team, claim) {
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Join as My Team</p>
+        <h1>${escapeHtml(team.name)}</h1>
+      </div>
+      <div class="si-notice">
+        <div class="si-notice-title">Someone's already playing for this team</div>
+        Ask them to hand you the phone, or tap below if that's you on a new device.
+      </div>
+      <div class="si-actions">
+        <button class="si-btn si-btn-primary" id="si-override">That's me — take over</button>
+        <button class="si-btn si-btn-secondary" id="si-cancel">Cancel</button>
+      </div>
+    `;
+    document.getElementById('si-override').onclick = async () => {
+      const dId = await getDeviceId();
+      await setClaim(team.id, dId);
+      await setCachedRole({ role: 'team', teamId: team.id, teamName: team.name });
+      renderTeamStub(team.id, team.name);
+    };
+    document.getElementById('si-cancel').onclick = renderTeamPicker;
+  }
+
+  async function renderTeamStub(teamId, teamName) {
+    currentScreen = { name: 'team', teamId };
+    stopPolling();
+    view.innerHTML = `
+      <div class="si-status-row"><span class="si-status-dot"></span> live · polling every ${POLL_MS / 1000}s</div>
+      <div class="si-header">
+        <p class="si-eyebrow">You're playing as</p>
+        <h1 class="si-you-are">${escapeHtml(teamName)}</h1>
+      </div>
+      <div class="si-card">
+        <p style="color:var(--fog); font-size:0.9rem; margin:0;">Game screens aren't wired up yet — this confirms your claim is locked in and synced.</p>
+      </div>
+      <div class="si-footer-note">
+        <button class="si-back-link" id="si-back">← not my team, go back</button>
+      </div>
+    `;
+    document.getElementById('si-back').onclick = renderTeamPicker;
+  }
+
+  // ---------- Dev reset ----------
+
+  document.getElementById('si-dev-reset').onclick = async () => {
+    await clearCachedRole();
+    renderLanding();
+  };
+
+  // ---------- Boot ----------
+
+  (async function boot() {
+    await getDeviceId();
+    const params = new URLSearchParams(window.location.search);
+    const wantsFacilitator = params.get('role') === 'facilitator';
+    const cached = await getCachedRole();
+
+    if (wantsFacilitator) {
+      if (cached && cached.role === 'facilitator' && cached.pinPassed) {
+        renderFacilitatorDashboard();
+      } else {
+        renderFacilitatorPinGate();
+      }
+      return;
+    }
+
+    if (cached && cached.role === 'facilitator' && cached.pinPassed) {
+      renderFacilitatorDashboard();
+    } else if (cached && cached.role === 'team') {
+      renderTeamStub(cached.teamId, cached.teamName);
+    } else {
+      renderLanding();
+    }
+  })();
+})();
+</script>
+</body>
+</html>
