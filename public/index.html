@@ -376,20 +376,189 @@ html, body { height: 100%; margin: 0; }
   const POLL_MS = 2500;
   const FACILITATOR_PIN = '2358';
 
-  // Placeholder game data — the real backlog/capacity/scoring rules live in
-  // the other thread. Shapes here (ids, points) are what round submissions
-  // are built from, so swapping in real data later should just mean
-  // replacing this block, not touching the screens below.
-  const PLACEHOLDER_CAPACITY = 8;
-  const SPIKE_COST = 2;
-  const PLACEHOLDER_BACKLOG = [
-    { id: 'story-login-bug', name: 'Fix login bug', points: 2 },
-    { id: 'story-search-filter', name: 'Add search filter', points: 3 },
-    { id: 'story-api-refactor', name: 'Refactor API layer', points: 5 },
-    { id: 'story-onboarding', name: 'Update onboarding flow', points: 3 },
-    { id: 'story-payment-retry', name: 'Payment retry logic', points: 4 },
-    { id: 'story-dark-mode', name: 'Dark mode toggle', points: 2 }
+  // ============================================================
+  // Ship It — real engine (tuned v2, human-input port).
+  // Teams submit commit/spike/crunch; the facilitator's device runs
+  // resolveTeamRound() for everyone so dice are single-sourced.
+  // ============================================================
+  const BACKLOG = [
+    { id:'S1',  name:'User accounts',         val:4,  est:3, enabler:true },
+    { id:'S2',  name:'Product search',        val:7,  est:5 },
+    { id:'S3',  name:'Cart & checkout',       val:8,  est:6, combo:true },
+    { id:'S4',  name:'Recommendation engine', val:10, est:8 },
+    { id:'S5',  name:'Ratings & reviews',     val:3,  est:2, polish:true },
+    { id:'S6',  name:'Order history',         val:4,  est:4, combo:true, enablerBenefit:true },
+    { id:'S7',  name:'Wishlist',              val:2,  est:2, polish:true },
+    { id:'S8',  name:'Admin dashboard',       val:5,  est:5, enablerBenefit:true },
+    { id:'S9',  name:'One-click reorder',     val:5,  est:3, combo:true },
+    { id:'S10', name:'Polish / dark mode',    val:2,  est:1, polish:true },
   ];
+  const CFG = {
+    capacity:20,
+    targets:[13,15],                 // release target (shipped value) per round; length = # rounds
+    missPenalty:8,
+    surplusRate:0.8, surplusCap:12,
+    brokenPenalty:2,
+    comboBonus:10, comboIds:['S3','S6','S9'],
+    spikeCost:1,
+    crunchGain:3, crunchNextPenalty:3, crunchBugPenalty:3, crunchBugThreshold:3,
+    midHi:1, midMax:2, bigHi:2, bigMax:4,
+    enablerDiscount:2, enablerMode:'estimate',
+    slackPerToken:3, tokenEndValue:1,
+    trust:true,
+  };
+  const CURVEBALLS = {
+    none:        { label:'Calm sprint',     desc:'No curveball this round.' },
+    security:    { label:'Security review',  desc:'Big stories (est 6+) cost +2 — extra hardening.' },
+    pivot:       { label:'Priority pivot',   desc:'Polish stories are worth double value this round.' },
+    integration: { label:'Integration help', desc:'Combo stories cost −1 — the infra came together.' },
+    turnover:    { label:'Team turnover',    desc:'Your single biggest story costs +2 — someone left.' },
+  };
+  const CB_KEYS = ['security','pivot','integration','turnover','none'];
+  function randomCurveball(){ return CB_KEYS[Math.floor(Math.random()*CB_KEYS.length)]; }
+
+  function byId(id){ return BACKLOG.find(s => s.id === id); }
+  function d6(){ return 1 + Math.floor(Math.random()*6); }
+  function planEst(s, s1Done){
+    let e = s.est;
+    if (CFG.enablerMode==='estimate' && s.enablerBenefit && s1Done) e = Math.max(0, e - CFG.enablerDiscount);
+    return e;
+  }
+  function tierEst(s, s1Done){ return CFG.enablerMode==='estimate' ? planEst(s, s1Done) : s.est; }
+  function tierOf(e){ return e<=2 ? 'safe' : (e<=5 ? 'mid' : 'big'); }
+  function valueOf(s, cb){ return (cb==='pivot' && s.polish) ? s.val*2 : s.val; }
+
+  function workStory(s, { spiked, s1Done, cb, isHi }){
+    const tier = tierOf(tierEst(s, s1Done));
+    let base = planEst(s, s1Done);
+    let variance = 0, blowup = false;
+    if (!spiked && tier!=='safe'){
+      const r = d6();
+      if (tier==='mid') variance = r<=3?0:(r<=5?CFG.midHi:CFG.midMax);
+      else              variance = r<=3?0:(r<=5?CFG.bigHi:CFG.bigMax);
+      blowup = (tier==='big' && r===6);
+    }
+    let cost = base + variance, cbMod = 0;
+    if (cb==='security' && s.est>=6) cbMod += 2;
+    if (cb==='integration' && s.combo) cbMod -= 1;
+    if (cb==='turnover' && isHi) cbMod += 2;
+    cost += cbMod;
+    if (spiked) cost += CFG.spikeCost;
+    return { cost: Math.max(0,cost), variance, blowup };
+  }
+  function bestCompletion(items, capacity){
+    const n = items.length; let best = { ids:[], rawVal:0, cost:0, score:-Infinity };
+    for (let m=0; m<(1<<n); m++){
+      let cost=0, val=0, ids=[];
+      for (let i=0;i<n;i++) if (m&(1<<i)){ cost+=items[i].cost; val+=items[i].value; ids.push(items[i].id); }
+      if (cost<=capacity){ const score = val - CFG.brokenPenalty*(n-ids.length); if (score>best.score) best={ids,rawVal:val,cost,score}; }
+    }
+    if (best.score===-Infinity) best={ids:[],rawVal:0,cost:0,score:0};
+    return best;
+  }
+  function availableStories(completedAll){
+    const done = new Set(completedAll || []);
+    return BACKLOG.filter(s => !done.has(s.id));
+  }
+
+  // Resolve one team's round from human inputs.
+  // state = { completedAll:[], carry, trustAvail, tokens, cumScore }
+  function resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state }){
+    const completedAll = new Set(state.completedAll || []);
+    const s1Done = completedAll.has('S1');
+    const baseCap = CFG.capacity + (state.carry||0);
+    let capacity = baseCap;
+    const target = CFG.targets[roundIndex];
+    const isFinal = roundIndex === CFG.targets.length - 1;
+    const tokensIn = state.tokens || 0;
+
+    const committed = (commitIds||[]).map(byId).filter(Boolean);
+    const spikeSet = new Set(spikeIds||[]);
+    let hi = null; committed.forEach(s=>{ if(!hi || s.est>hi.est) hi=s; });
+
+    let rolled = committed.map(s=>{
+      const w = workStory(s, { spiked:spikeSet.has(s.id), s1Done, cb, isHi: hi && s.id===hi.id });
+      return { id:s.id, cost:w.cost, variance:w.variance, value:valueOf(s,cb), blowup:w.blowup, spiked:spikeSet.has(s.id) };
+    });
+
+    let trustDropped = null, working = rolled.slice();
+    if (CFG.trust && state.trustAvail && roundIndex>0){
+      if (working.reduce((a,b)=>a+b.cost,0) > capacity){
+        const b0 = bestCompletion(working, capacity);
+        let bestS = b0.rawVal - CFG.brokenPenalty*(working.length-b0.ids.length), drop=null;
+        for (const c of working){
+          const rest = working.filter(x=>x.id!==c.id);
+          const bc = bestCompletion(rest, capacity);
+          const sc = bc.rawVal - CFG.brokenPenalty*(rest.length-bc.ids.length);
+          if (sc>bestS){ bestS=sc; drop=c.id; }
+        }
+        if (drop){ trustDropped=drop; working = working.filter(x=>x.id!==drop); }
+      }
+    }
+
+    function evaluate(items, cap){
+      const comp = bestCompletion(items, cap);
+      const doneIds = new Set(comp.ids);
+      const broken = items.length - doneIds.size;
+      const shipped = comp.rawVal;
+      const hitTarget = shipped >= target;
+      const surplus = hitTarget ? Math.min(CFG.surplusCap, Math.floor((shipped-target)*CFG.surplusRate)) : 0;
+      const miss = hitTarget ? 0 : CFG.missPenalty;
+      const score = comp.rawVal - CFG.brokenPenalty*broken + surplus - miss;
+      return { comp, doneIds, broken, shipped, hitTarget, surplus, miss, usedCost:comp.cost, score };
+    }
+    function absorb(items, k){
+      const idx = items.map((it,i)=>[i,it.variance]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,k).map(x=>x[0]);
+      return items.map((it,i)=> idx.includes(i) ? {...it, cost:it.cost-it.variance, variance:0} : it);
+    }
+    let bestOutcome = evaluate(working, capacity), bestK = 0;
+    for (let k=1; k<=tokensIn; k++){
+      const o = evaluate(absorb(working,k), capacity);
+      const net = o.score - k*CFG.tokenEndValue, cur = bestOutcome.score - bestK*CFG.tokenEndValue;
+      if (net>cur){ bestOutcome=o; bestK=k; }
+    }
+    let outcome = bestOutcome, spent = bestK;
+    const workingUsed = absorb(working, bestK);
+
+    let crunched = false, crunchBug = false;
+    if (crunch && (!outcome.hitTarget || outcome.broken>0)){
+      crunched = true;
+      capacity = baseCap + CFG.crunchGain;
+      crunchBug = d6() <= CFG.crunchBugThreshold;
+      outcome = evaluate(workingUsed, capacity);
+    }
+
+    outcome.doneIds.forEach(id=>completedAll.add(id));
+
+    const unused = Math.max(0, capacity - outcome.usedCost);
+    const gained = (crunched || !outcome.hitTarget) ? 0 : Math.floor(unused / CFG.slackPerToken);
+    const tokensOut = tokensIn - spent + gained;
+
+    const roundScore = outcome.score - (crunchBug ? CFG.crunchBugPenalty : 0);
+    const brokenIds = working.filter(w=>!outcome.doneIds.has(w.id)).map(w=>w.id);
+    const nextCarry = (crunched && !isFinal) ? -CFG.crunchNextPenalty : 0;
+    const finalCrunchPenalty = (crunched && isFinal) ? CFG.crunchNextPenalty : 0;
+    const nextTrust = outcome.hitTarget && brokenIds.length===0;
+    const cumScore = (state.cumScore||0) + roundScore;
+
+    const combo = CFG.comboIds.every(id=>completedAll.has(id));
+    const endBonus = isFinal ? ((combo?CFG.comboBonus:0) + tokensOut*CFG.tokenEndValue - finalCrunchPenalty) : 0;
+    const finalScore = cumScore + endBonus;
+
+    const newState = { completedAll:[...completedAll], carry:nextCarry, trustAvail:nextTrust, tokens:tokensOut, cumScore };
+    const log = {
+      round: roundIndex+1, cb, target,
+      committed: (commitIds||[]).slice(), spikes: [...spikeSet], crunch,
+      costs: rolled.map(r=>({ id:r.id, cost:r.cost, blowup:r.blowup, spiked:r.spiked, value:r.value })),
+      completed: [...outcome.doneIds], broken: brokenIds, trustDropped,
+      shipped: outcome.shipped, hitTarget: outcome.hitTarget, surplus: outcome.surplus, miss: outcome.miss,
+      crunched, crunchBug, tokensSpent: spent, tokensGained: gained, tokensOut,
+      roundScore, cumScore,
+      isFinal, combo: isFinal?combo:undefined, endBonus: isFinal?endBonus:undefined, finalScore: isFinal?finalScore:undefined,
+      capacityUsed: outcome.usedCost, capacity,
+    };
+    return { newState, log };
+  }
 
   let deviceId = null;
   let pollTimer = null;
@@ -542,91 +711,130 @@ html, body { height: 100%; margin: 0; }
     await sharedSet('team:' + teamId + ':claim', { deviceId: dId, claimedAt: Date.now() });
   }
 
-  // ---------- Round submissions ----------
+  // ---------- Round submissions, per-team state, per-round results ----------
 
   async function getRoundSubmission(teamId, round) {
     try { return await sharedGet('team:' + teamId + ':round' + round); } catch (e) { return null; }
   }
-
   async function setRoundSubmission(teamId, round, data) {
     await sharedSet('team:' + teamId + ':round' + round, data);
   }
 
-  // Auto-fails any team that hasn't submitted (records a zero commitment,
-  // tagged autoFailed so it's visibly distinct from a real zero-pick
-  // submission), then flips the room into RESOLVED. Facilitator can call
-  // this at any time — doesn't wait for 100% submission.
+  // Persistent cross-round state (completedAll / carry / trust / tokens / cumScore).
+  function freshTeamState() { return { completedAll: [], carry: 0, trustAvail: false, tokens: 0, cumScore: 0 }; }
+  async function getTeamState(teamId) {
+    try { return (await sharedGet('team:' + teamId + ':state')) || freshTeamState(); } catch (e) { return freshTeamState(); }
+  }
+  async function setTeamState(teamId, st) { await sharedSet('team:' + teamId + ':state', st); }
+
+  // Per-round resolved result (what team + facilitator screens read back).
+  async function getResult(teamId, round) {
+    try { return await sharedGet('team:' + teamId + ':result' + round); } catch (e) { return null; }
+  }
+  async function setResult(teamId, round, data) { await sharedSet('team:' + teamId + ':result' + round, data); }
+
+  // Facilitator's device runs the engine for everyone (single-sourced dice).
+  // One curveball is locked for the whole round; non-submitters resolve as an
+  // empty commit (tagged autoFailed) so they're visibly distinct. Idempotent-ish:
+  // only resolves while phase is COMMITTING.
   async function resolveRound(round, teams) {
-    const existing = await Promise.all(teams.map(t => getRoundSubmission(t.id, round)));
-    await Promise.all(teams.map((t, i) => {
-      if (existing[i]) return Promise.resolve();
-      return setRoundSubmission(t.id, round, {
-        teamId: t.id,
-        round,
-        stories: [],
-        spike: false,
-        crunch: false,
-        totalPoints: 0,
-        autoFailed: true,
-        submittedAt: Date.now()
-      });
+    const roomState = (await getRoomState()) || { phase: 'COMMITTING', opened: true, round };
+    if (roomState.phase !== 'COMMITTING') return roomState; // already resolved
+    const roundIndex = round - 1;
+    const cb = randomCurveball();
+
+    const [subs, states] = await Promise.all([
+      Promise.all(teams.map(t => getRoundSubmission(t.id, round))),
+      Promise.all(teams.map(t => getTeamState(t.id))),
+    ]);
+
+    await Promise.all(teams.map(async (t, i) => {
+      const sub = subs[i];
+      const autoFailed = !sub;
+      const commitIds = sub ? (sub.commitIds || []) : [];
+      const spikeIds  = sub ? (sub.spikeIds  || []) : [];
+      const crunch    = sub ? !!sub.crunch : false;
+      const { newState, log } = resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state: states[i] });
+      log.autoFailed = autoFailed;
+      await Promise.all([ setResult(t.id, round, log), setTeamState(t.id, newState) ]);
     }));
-    const state = (await getRoomState()) || { phase: 'COMMITTING', opened: true };
-    state.phase = 'RESOLVED';
+
+    roomState.phase = 'RESOLVED';
+    roomState.round = round;
+    roomState.lastCb = cb;
+    await setRoomState(roomState);
+    return roomState;
+  }
+
+  // Advance to the next commit round (state carries; backlog is filtered by completedAll).
+  async function startNextRound(teams) {
+    const state = (await getRoomState()) || { phase: 'RESOLVED', opened: true, round: 1 };
+    const next = (state.round || 1) + 1;
+    state.phase = 'COMMITTING';
+    state.round = next;
     await setRoomState(state);
     return state;
   }
 
-  // PLACEHOLDER RANKING — ranks by points committed only. This is not real
-  // game scoring (no dice, no outcomes). Swap this function's internals out
-  // once the actual scoring engine exists; callers just expect it to return
-  // rows re-sorted best-first.
-  function getPlaceholderRanking(rows) {
-    return [...rows].sort((a, b) => {
-      const aPts = (a.submission && !a.submission.autoFailed) ? a.submission.totalPoints : -1;
-      const bPts = (b.submission && !b.submission.autoFailed) ? b.submission.totalPoints : -1;
-      return bPts - aPts;
-    });
+  function storyName(id){ const s = byId(id); return s ? s.name : id; }
+  // score a result row uses for ranking: finalScore on the last round, else running cumScore
+  function rowScore(res){
+    if (!res) return -Infinity;
+    return (res.isFinal && typeof res.finalScore === 'number') ? res.finalScore : res.cumScore;
   }
 
   async function buildFacilitatorResultsHtml(round, teams) {
-    const submissions = await Promise.all(teams.map(t => getRoundSubmission(t.id, round)));
-    const rows = teams.map((t, i) => ({ team: t, submission: submissions[i] }));
-    const ranked = getPlaceholderRanking(rows);
+    const results = await Promise.all(teams.map(t => getResult(t.id, round)));
+    const rows = teams.map((t, i) => ({ team: t, res: results[i] }));
+    const ranked = [...rows].sort((a, b) => rowScore(b.res) - rowScore(a.res));
+    const isFinal = rows.some(r => r.res && r.res.isFinal);
 
     const leaderboardRows = ranked.map((r, i) => {
-      const pill = (r.submission && r.submission.autoFailed)
-        ? '<span class="si-pill">no commitment</span>'
-        : `<span class="si-pill taken">${r.submission ? r.submission.totalPoints : 0} pts</span>`;
+      const res = r.res;
+      const score = res ? rowScore(res) : 0;
+      const tag = res && res.autoFailed
+        ? '<span class="si-pill">no commit</span>'
+        : `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'}</span>`;
+      const missTag = (res && !res.autoFailed && !res.hitTarget) ? ' <span class="si-pill" style="border-color:var(--ember);color:var(--ember);">missed target</span>' : '';
       return `<div class="si-team-row si-team-row-fac">
         <span class="si-team-name">${i + 1}. ${escapeHtml(r.team.name)}</span>
-        ${pill}
+        <span class="si-fac-row-actions">${missTag}${tag}</span>
       </div>`;
     }).join('');
 
-    const breakdownRows = rows.map(({ team, submission }) => {
-      if (!submission) {
+    const breakdownRows = rows.map(({ team, res }) => {
+      if (!res) {
         return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">no record</span></div>`;
       }
-      if (submission.autoFailed) {
-        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit</span></div>`;
+      if (res.autoFailed) {
+        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit · ${res.roundScore} pts</span></div>`;
       }
-      const storyNames = submission.stories.map(id => {
-        const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
-        return s ? s.name : id;
-      }).join(', ') || 'no stories';
-      const extras = [submission.spike ? 'spike' : null, submission.crunch ? 'crunch' : null].filter(Boolean).join(', ');
+      const shipped = res.completed.map(storyName).join(', ') || 'nothing shipped';
+      const brokeTxt = res.broken.length ? ` · broke ${res.broken.length}` : '';
+      const extras = [
+        `shipped ${res.shipped}/${res.target}`,
+        res.hitTarget ? (res.surplus ? `+${res.surplus} surplus` : 'target met') : `missed (−${res.miss})`,
+        res.spikes.length ? `spike ×${res.spikes.length}` : null,
+        res.crunched ? (res.crunchBug ? 'crunched (bug!)' : 'crunched') : null,
+        res.tokensOut ? `${res.tokensOut} slack tok` : null,
+        (res.isFinal && res.combo) ? 'COMBO +' + CFG.comboBonus : null,
+      ].filter(Boolean).join(' · ');
+      const scoreLabel = (res.isFinal && typeof res.finalScore==='number')
+        ? `${res.finalScore} final` : `${res.cumScore} pts`;
       return `<div class="si-team-row si-team-row-fac">
           <span class="si-team-name">${escapeHtml(team.name)}</span>
-          <span class="si-pill taken">${submission.totalPoints} pts</span>
+          <span class="si-pill taken si-mono">${scoreLabel}</span>
         </div>
-        <p style="color:var(--fog); font-size:0.8rem; margin:2px 0 8px;">${escapeHtml(storyNames)}${extras ? ' · ' + extras : ''}</p>`;
+        <p style="color:var(--fog); font-size:0.78rem; margin:2px 0 10px;">${escapeHtml(shipped)}${brokeTxt}<br>${escapeHtml(extras)}</p>`;
     }).join('');
+
+    const cbKey = (results.find(r => r && r.cb) || {}).cb;
+    const cbLine = cbKey ? `<p style="color:var(--fog); font-size:0.82rem; margin:0 0 12px;">Curveball: <b>${CURVEBALLS[cbKey].label}</b> — ${CURVEBALLS[cbKey].desc}</p>` : '';
 
     return `
       <div class="si-card">
-        <p class="si-eyebrow" style="margin-bottom:4px;">Round ${round} — leaderboard</p>
-        <p style="color:var(--fog); font-size:0.8rem; margin:0 0 12px;">Ranked by points committed — placeholder, not final scoring.</p>
+        <p class="si-eyebrow" style="margin-bottom:4px;">${isFinal ? 'Final standings' : 'Round ' + round + ' — leaderboard'}</p>
+        ${cbLine}
         <div class="si-team-list">${leaderboardRows}</div>
       </div>
       <div class="si-card">
@@ -642,10 +850,14 @@ html, body { height: 100%; margin: 0; }
   // Note: only clears round1 for now — extend this list if/when round 2+
   // submissions exist.
   async function endGame(fullWipe, teams) {
-    await Promise.all(teams.flatMap(t => [
-      sharedDelete('team:' + t.id + ':claim'),
-      sharedDelete('team:' + t.id + ':round1')
-    ]));
+    const rounds = CFG.targets.length;
+    await Promise.all(teams.flatMap(t => {
+      const keys = ['team:' + t.id + ':claim', 'team:' + t.id + ':state'];
+      for (let r = 1; r <= rounds; r++) {
+        keys.push('team:' + t.id + ':round' + r, 'team:' + t.id + ':result' + r);
+      }
+      return keys.map(k => sharedDelete(k));
+    }));
     if (fullWipe) {
       await setTeams([]);
     }
@@ -726,6 +938,8 @@ html, body { height: 100%; margin: 0; }
 
   // ---- Facilitator dashboard (roster setup + start room + open round 1) ----
 
+  const TOTAL_ROUNDS = CFG.targets.length;
+
   function facilitatorActionHtml(state, teams) {
     if (!state.opened) {
       return `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`;
@@ -734,15 +948,21 @@ html, body { height: 100%; margin: 0; }
       return `<button class="si-btn si-btn-primary" id="si-resolve-round">Resolve round ${state.round || 1}</button>`;
     }
     if (state.phase === 'RESOLVED') {
-      return `<span class="si-pill open" style="padding:8px 14px;">Round ${state.round || 1} resolved</span>`;
+      const round = state.round || 1;
+      if (round < TOTAL_ROUNDS) {
+        return `<button class="si-btn si-btn-primary" id="si-next-round">Open round ${round + 1} — start committing</button>`;
+      }
+      return `<span class="si-pill open" style="padding:8px 14px;">Game over — final round resolved</span>`;
     }
     return `<span class="si-pill open" style="padding:8px 14px;">Room open</span>
       <button class="si-btn si-btn-primary" id="si-open-round1" ${teams.length ? '' : 'disabled'}>Open Round 1 — start committing</button>`;
   }
 
   function facilitatorHeadline(state) {
-    if (state.phase === 'COMMITTING') return `Round ${state.round || 1} — committing`;
-    if (state.phase === 'RESOLVED') return `Round ${state.round || 1} — resolved`;
+    const round = state.round || 1;
+    const isFinal = round >= TOTAL_ROUNDS;
+    if (state.phase === 'COMMITTING') return `Round ${round} of ${TOTAL_ROUNDS} — committing`;
+    if (state.phase === 'RESOLVED') return isFinal ? 'Final standings' : `Round ${round} — resolved`;
     if (state.opened) return 'Room open for sign-in';
     return 'Setting up the room';
   }
@@ -810,7 +1030,17 @@ html, body { height: 100%; margin: 0; }
     const resolveBtn = document.getElementById('si-resolve-round');
     if (resolveBtn) {
       resolveBtn.onclick = async () => {
+        resolveBtn.disabled = true;
+        resolveBtn.textContent = 'Resolving…';
         await resolveRound(state.round || 1, teams);
+        renderFacilitatorDashboard();
+      };
+    }
+
+    const nextRoundBtn = document.getElementById('si-next-round');
+    if (nextRoundBtn) {
+      nextRoundBtn.onclick = async () => {
+        await startNextRound(teams);
         renderFacilitatorDashboard();
       };
     }
@@ -1052,13 +1282,12 @@ html, body { height: 100%; margin: 0; }
         renderTeamSubmitted(teamName, submission);
         return;
       }
-      renderTeamCommitPicker(teamId, teamName, round);
+      await renderTeamCommitPicker(teamId, teamName, round);
       return;
     }
 
     if (state.phase === 'RESOLVED') {
-      const submission = await getRoundSubmission(teamId, round);
-      renderTeamResults(teamId, teamName, round, submission);
+      await renderTeamResults(teamId, teamName, round);
       return;
     }
 
@@ -1087,47 +1316,53 @@ html, body { height: 100%; margin: 0; }
     });
   }
 
-  function renderTeamCommitPicker(teamId, teamName, round) {
+  async function renderTeamCommitPicker(teamId, teamName, round) {
     currentScreen = { name: 'team-commit', teamId };
     stopPolling();
 
-    const local = { selected: new Set(), spike: false, crunch: false, submitting: false };
+    const st = await getTeamState(teamId);
+    if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) return;
+    const s1Done = new Set(st.completedAll || []).has('S1');
+    const avail = availableStories(st.completedAll);
+    const capacity = CFG.capacity;
+    const target = CFG.targets[round - 1];
 
-    function total() {
+    const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false };
+
+    const pe = s => planEst(s, s1Done);
+    function used() {
       let t = 0;
-      PLACEHOLDER_BACKLOG.forEach(s => { if (local.selected.has(s.id)) t += s.points; });
-      if (local.spike) t += SPIKE_COST;
+      avail.forEach(s => { if (local.selected.has(s.id)) t += pe(s); });
+      t += local.spikes.size * CFG.spikeCost;
       return t;
     }
 
     function draw() {
-      const capacity = PLACEHOLDER_CAPACITY;
-      const t = total();
-
+      const t = used();
       view.innerHTML = `
         <div class="si-header">
-          <p class="si-eyebrow">Round ${round} — commit</p>
+          <p class="si-eyebrow">Round ${round} of ${CFG.targets.length} — commit</p>
           <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
         </div>
         <div class="si-card">
-          <p class="si-eyebrow" style="margin-bottom:12px;">Capacity — <span class="si-mono">${t} / ${capacity} pts</span></p>
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+            <p class="si-eyebrow" style="margin:0;">Capacity used</p>
+            <p class="si-mono" style="margin:0; font-weight:600;">${t} / ${capacity}</p>
+          </div>
+          <p style="color:var(--fog); font-size:0.8rem; margin:0 0 14px;">Ship at least <b class="si-mono">${target}</b> value this round to hit the release. Tap a story to commit it; tap again to drop it.</p>
           <div class="si-team-list" id="si-backlog-list"></div>
         </div>
         <div class="si-card">
           <div class="si-team-list">
-            <button class="si-team-row" id="si-spike-toggle">
-              <span class="si-team-name">Spike (+${SPIKE_COST} pts)</span>
-              ${local.spike ? '<span class="si-pill taken">on</span>' : '<span class="si-pill open">off</span>'}
-            </button>
-            <button class="si-team-row" id="si-crunch-toggle">
-              <span class="si-team-name">Crunch</span>
+            <div class="si-team-row" id="si-crunch-toggle" style="cursor:pointer;">
+              <span class="si-team-name">Crunch <span style="color:var(--fog); font-weight:400; font-size:0.82rem;">— +${CFG.crunchGain} capacity now, but a bug risk &amp; −${CFG.crunchNextPenalty} next round</span></span>
               ${local.crunch ? '<span class="si-pill taken">on</span>' : '<span class="si-pill open">off</span>'}
-            </button>
+            </div>
           </div>
         </div>
         <div class="si-actions">
           <button class="si-btn si-btn-primary" id="si-submit-commit" ${local.submitting ? 'disabled' : ''}>
-            ${local.submitting ? 'Submitting…' : 'Submit'}
+            ${local.submitting ? 'Submitting…' : (local.selected.size ? 'Submit commitment' : 'Submit with nothing')}
           </button>
         </div>
         <div class="si-footer-note">
@@ -1136,35 +1371,53 @@ html, body { height: 100%; margin: 0; }
       `;
 
       const list = document.getElementById('si-backlog-list');
-      list.innerHTML = PLACEHOLDER_BACKLOG.map(s => {
+      list.innerHTML = avail.map(s => {
         const isSel = local.selected.has(s.id);
-        const wouldExceed = !isSel && (t + s.points > capacity);
-        return `<button class="si-team-row${isSel ? ' claimed' : ''}" data-story-id="${s.id}" ${wouldExceed ? 'disabled' : ''}>
-          <span class="si-team-name">${escapeHtml(s.name)} — ${s.points} pt${s.points === 1 ? '' : 's'}</span>
-          ${isSel ? '<span class="si-pill taken">picked</span>' : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`}
-        </button>`;
+        const isSpiked = local.spikes.has(s.id);
+        const wouldExceed = !isSel && (t + pe(s) > capacity);
+        const est = pe(s);
+        const discounted = est !== s.est;
+        const right = isSel
+          ? `<span class="si-fac-row-actions">
+               <span class="si-pill${isSpiked ? ' taken' : ''}" data-action="spike" data-story-id="${s.id}" style="cursor:pointer;">${isSpiked ? '🛡 safe' : 'spike +' + CFG.spikeCost}</span>
+               <span class="si-pill taken">picked</span>
+             </span>`
+          : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`;
+        return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-story-id="${s.id}">
+          <span class="si-team-name" data-action="pick" data-story-id="${s.id}" style="cursor:pointer; flex:1;">
+            ${escapeHtml(s.name)}
+            <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · est ${est}${discounted ? ' (was ' + s.est + ')' : ''}</span>
+          </span>
+          ${right}
+        </div>`;
       }).join('');
 
-      PLACEHOLDER_BACKLOG.forEach(s => {
-        const el = list.querySelector(`[data-story-id="${s.id}"]`);
-        if (el && !el.disabled) {
-          el.onclick = () => {
-            if (local.selected.has(s.id)) local.selected.delete(s.id);
-            else local.selected.add(s.id);
-            draw();
-          };
-        }
+      list.querySelectorAll('[data-action="pick"]').forEach(el => {
+        el.onclick = () => {
+          const id = el.getAttribute('data-story-id');
+          const s = byId(id);
+          if (local.selected.has(id)) { local.selected.delete(id); local.spikes.delete(id); }
+          else {
+            if (used() + pe(s) > capacity) return;
+            local.selected.add(id);
+          }
+          draw();
+        };
+      });
+      list.querySelectorAll('[data-action="spike"]').forEach(el => {
+        el.onclick = (e) => {
+          e.stopPropagation();
+          const id = el.getAttribute('data-story-id');
+          if (local.spikes.has(id)) local.spikes.delete(id);
+          else {
+            if (used() + CFG.spikeCost > capacity) return;
+            local.spikes.add(id);
+          }
+          draw();
+        };
       });
 
-      document.getElementById('si-spike-toggle').onclick = () => {
-        if (!local.spike && t + SPIKE_COST > capacity) return;
-        local.spike = !local.spike;
-        draw();
-      };
-      document.getElementById('si-crunch-toggle').onclick = () => {
-        local.crunch = !local.crunch;
-        draw();
-      };
+      document.getElementById('si-crunch-toggle').onclick = () => { local.crunch = !local.crunch; draw(); };
       document.getElementById('si-submit-commit').onclick = submit;
       document.getElementById('si-back').onclick = renderTeamPicker;
     }
@@ -1174,12 +1427,10 @@ html, body { height: 100%; margin: 0; }
       local.submitting = true;
       draw();
       const payload = {
-        teamId,
-        round,
-        stories: Array.from(local.selected),
-        spike: local.spike,
+        teamId, round,
+        commitIds: Array.from(local.selected),
+        spikeIds: Array.from(local.spikes),
         crunch: local.crunch,
-        totalPoints: total(),
         submittedAt: Date.now()
       };
       try {
@@ -1195,83 +1446,118 @@ html, body { height: 100%; margin: 0; }
     draw();
   }
 
+  function commitRowsHtml(commitIds, spikeIds) {
+    const spikeSet = new Set(spikeIds || []);
+    return (commitIds || []).map(id => {
+      const s = byId(id);
+      const nm = s ? s.name : id;
+      const tag = spikeSet.has(id) ? '<span class="si-pill taken">🛡 spiked</span>' : '';
+      return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(nm)}</span>${tag}</div>`;
+    }).join('');
+  }
+
   function renderTeamSubmitted(teamName, submission) {
-    currentScreen = { name: 'team-submitted' };
+    const teamId = submission.teamId;
+    currentScreen = { name: 'team-submitted', teamId };
     stopPolling();
-
-    const storyNames = submission.stories.map(id => {
-      const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
-      return s ? s.name : id;
+    startPolling(async () => {
+      if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) return;
+      const s = await getRoomState();
+      if (s && (s.phase === 'RESOLVED' || (s.phase === 'COMMITTING' && (s.round || 1) !== submission.round))) {
+        await renderTeamEntry(teamId, teamName);
+      }
     });
-
+    const rows = commitRowsHtml(submission.commitIds, submission.spikeIds);
     view.innerHTML = `
       <div class="si-header">
         <p class="si-eyebrow">Round ${submission.round} — submitted</p>
         <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
       </div>
       <div class="si-card">
-        <p class="si-eyebrow" style="margin-bottom:12px;">✓ submitted — waiting on the facilitator</p>
-        ${storyNames.length
-          ? `<div class="si-team-list">${storyNames.map(n => `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(n)}</span></div>`).join('')}</div>`
-          : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">No stories picked.</p>`}
-        <p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">
-          ${submission.spike ? 'Spike: yes. ' : ''}${submission.crunch ? 'Crunch: yes. ' : ''}Total: <span class="si-mono">${submission.totalPoints} pts</span>
-        </p>
+        <p class="si-eyebrow" style="margin-bottom:12px;">✓ committed — waiting on the facilitator</p>
+        ${(submission.commitIds && submission.commitIds.length)
+          ? `<div class="si-team-list">${rows}</div>`
+          : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">You committed to nothing this round.</p>`}
+        ${submission.crunch ? `<p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">Crunch: on.</p>` : ''}
       </div>
       <div class="si-footer-note">
-        <p style="color:var(--fog); font-size:0.8rem; margin:0;">Your picks are locked until the facilitator resolves the round.</p>
+        <p style="color:var(--fog); font-size:0.8rem; margin:0;">Locked until the facilitator resolves the round.</p>
       </div>
     `;
   }
 
   // ---- Team results (round RESOLVED — shows only this team's own commitment) ----
 
-  function renderTeamResults(teamId, teamName, round, submission) {
+  async function renderTeamResults(teamId, teamName, round) {
     currentScreen = { name: 'team-results', teamId };
     stopPolling();
+    const res = await getResult(teamId, round);
+    if (currentScreen.name !== 'team-results' || currentScreen.teamId !== teamId) return;
 
-    if (!submission || submission.autoFailed) {
-      view.innerHTML = `
-        <div class="si-header">
-          <p class="si-eyebrow">Round ${round} — resolved</p>
-          <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
-        </div>
-        <div class="si-card">
-          <p class="si-eyebrow" style="margin-bottom:12px;">No commitment on record</p>
-          <p style="color:var(--fog); font-size:0.9rem; margin:0;">${submission ? "You didn't submit before the round was resolved — this counted as no commitment." : "No submission was found for this round."}</p>
-        </div>
-        <div class="si-footer-note">
-          <button class="si-back-link" id="si-back">← not my team, go back</button>
-        </div>
-      `;
-      document.getElementById('si-back').onclick = renderTeamPicker;
-      return;
+    const header = `
+      <div class="si-header">
+        <p class="si-eyebrow">${res && res.isFinal ? 'Final result' : 'Round ' + round + ' — resolved'}</p>
+        <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+      </div>`;
+    const back = `<div class="si-footer-note"><button class="si-back-link" id="si-back">← not my team, go back</button></div>`;
+    const wire = () => { document.getElementById('si-back').onclick = renderTeamPicker; };
+
+    if (!res) {
+      view.innerHTML = header + `<div class="si-card"><p style="color:var(--fog); font-size:0.9rem; margin:0;">No result found for this round yet.</p></div>` + back;
+      wire(); return;
     }
 
-    const storyNames = submission.stories.map(id => {
-      const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
-      return s ? s.name : id;
-    });
+    const cb = CURVEBALLS[res.cb];
+    const cbLine = cb ? `<p style="color:var(--fog); font-size:0.82rem; margin:0 0 14px;">Curveball: <b>${cb.label}</b> — ${cb.desc}</p>` : '';
 
-    view.innerHTML = `
-      <div class="si-header">
-        <p class="si-eyebrow">Round ${round} — resolved</p>
-        <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+    if (res.autoFailed) {
+      view.innerHTML = header + `
+        <div class="si-card">
+          ${cbLine}
+          <p class="si-eyebrow" style="margin-bottom:8px;">No commitment on record</p>
+          <p style="color:var(--fog); font-size:0.9rem; margin:0;">You didn't submit before the round was resolved — missed the release (−${CFG.missPenalty}).</p>
+        </div>` + back;
+      wire(); return;
+    }
+
+    const bigScore = res.isFinal ? res.finalScore : res.cumScore;
+    const targetPill = res.hitTarget
+      ? `<span class="si-pill open">shipped ${res.shipped} / ${res.target} ✓${res.surplus ? ' · +' + res.surplus + ' surplus' : ''}</span>`
+      : `<span class="si-pill" style="border-color:var(--ember);color:var(--ember);">shipped ${res.shipped} / ${res.target} · missed −${res.miss}</span>`;
+
+    const shippedRows = res.completed.length
+      ? `<div class="si-team-list">${res.completed.map(id => {
+          const spiked = res.spikes.includes(id);
+          return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(storyName(id))}</span>${spiked ? '<span class="si-pill taken">🛡</span>' : ''}</div>`;
+        }).join('')}</div>`
+      : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">Nothing shipped.</p>`;
+
+    const brokeLine = res.broken.length
+      ? `<p style="color:var(--ember); font-size:0.82rem; margin:12px 0 0;">Broke ${res.broken.length} promise${res.broken.length===1?'':'s'}: ${escapeHtml(res.broken.map(storyName).join(', '))} (−${CFG.brokenPenalty} each)</p>`
+      : '';
+    const extraBits = [
+      res.crunched ? (res.crunchBug ? `Crunched — shipped a bug (−${CFG.crunchBugPenalty})` : 'Crunched for extra capacity') : null,
+      res.tokensGained ? `Banked ${res.tokensGained} slack token${res.tokensGained===1?'':'s'}` : null,
+      res.tokensSpent ? `Spent ${res.tokensSpent} slack token${res.tokensSpent===1?'':'s'} to absorb overruns` : null,
+      (res.isFinal && res.combo) ? `Checkout combo complete — +${CFG.comboBonus}` : null,
+      (res.isFinal && res.tokensOut) ? `${res.tokensOut} leftover slack token${res.tokensOut===1?'':'s'} — +${res.tokensOut * CFG.tokenEndValue}` : null,
+    ].filter(Boolean);
+    const extraLine = extraBits.length ? `<p style="color:var(--fog); font-size:0.82rem; margin:10px 0 0;">${extraBits.map(escapeHtml).join('<br>')}</p>` : '';
+
+    view.innerHTML = header + `
+      <div class="si-card" style="text-align:center;">
+        ${cbLine}
+        <p class="si-eyebrow" style="margin-bottom:2px;">${res.isFinal ? 'Final score' : 'Score so far'}</p>
+        <p class="si-mono" style="font-size:2.6rem; font-weight:600; margin:0 0 8px;">${bigScore}</p>
+        ${targetPill}
       </div>
       <div class="si-card">
-        <p class="si-eyebrow" style="margin-bottom:12px;">Your commitment</p>
-        ${storyNames.length
-          ? `<div class="si-team-list">${storyNames.map(n => `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(n)}</span></div>`).join('')}</div>`
-          : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">No stories picked.</p>`}
-        <p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">
-          ${submission.spike ? 'Spike: yes. ' : ''}${submission.crunch ? 'Crunch: yes. ' : ''}Total: <span class="si-mono">${submission.totalPoints} pts</span>
-        </p>
-      </div>
-      <div class="si-footer-note">
-        <button class="si-back-link" id="si-back">← not my team, go back</button>
-      </div>
-    `;
-    document.getElementById('si-back').onclick = renderTeamPicker;
+        <p class="si-eyebrow" style="margin-bottom:12px;">Shipped this round</p>
+        ${shippedRows}
+        ${brokeLine}
+        ${extraLine}
+      </div>` + back;
+    wire();
   }
 
   // ---------- Dev reset ----------
