@@ -577,6 +577,65 @@ html, body { height: 100%; margin: 0; }
     return state;
   }
 
+  // PLACEHOLDER RANKING — ranks by points committed only. This is not real
+  // game scoring (no dice, no outcomes). Swap this function's internals out
+  // once the actual scoring engine exists; callers just expect it to return
+  // rows re-sorted best-first.
+  function getPlaceholderRanking(rows) {
+    return [...rows].sort((a, b) => {
+      const aPts = (a.submission && !a.submission.autoFailed) ? a.submission.totalPoints : -1;
+      const bPts = (b.submission && !b.submission.autoFailed) ? b.submission.totalPoints : -1;
+      return bPts - aPts;
+    });
+  }
+
+  async function buildFacilitatorResultsHtml(round, teams) {
+    const submissions = await Promise.all(teams.map(t => getRoundSubmission(t.id, round)));
+    const rows = teams.map((t, i) => ({ team: t, submission: submissions[i] }));
+    const ranked = getPlaceholderRanking(rows);
+
+    const leaderboardRows = ranked.map((r, i) => {
+      const pill = (r.submission && r.submission.autoFailed)
+        ? '<span class="si-pill">no commitment</span>'
+        : `<span class="si-pill taken">${r.submission ? r.submission.totalPoints : 0} pts</span>`;
+      return `<div class="si-team-row si-team-row-fac">
+        <span class="si-team-name">${i + 1}. ${escapeHtml(r.team.name)}</span>
+        ${pill}
+      </div>`;
+    }).join('');
+
+    const breakdownRows = rows.map(({ team, submission }) => {
+      if (!submission) {
+        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">no record</span></div>`;
+      }
+      if (submission.autoFailed) {
+        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit</span></div>`;
+      }
+      const storyNames = submission.stories.map(id => {
+        const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
+        return s ? s.name : id;
+      }).join(', ') || 'no stories';
+      const extras = [submission.spike ? 'spike' : null, submission.crunch ? 'crunch' : null].filter(Boolean).join(', ');
+      return `<div class="si-team-row si-team-row-fac">
+          <span class="si-team-name">${escapeHtml(team.name)}</span>
+          <span class="si-pill taken">${submission.totalPoints} pts</span>
+        </div>
+        <p style="color:var(--fog); font-size:0.8rem; margin:2px 0 8px;">${escapeHtml(storyNames)}${extras ? ' · ' + extras : ''}</p>`;
+    }).join('');
+
+    return `
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:4px;">Round ${round} — leaderboard</p>
+        <p style="color:var(--fog); font-size:0.8rem; margin:0 0 12px;">Ranked by points committed — placeholder, not final scoring.</p>
+        <div class="si-team-list">${leaderboardRows}</div>
+      </div>
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:12px;">Round ${round} — breakdown</p>
+        <div class="si-team-list">${breakdownRows}</div>
+      </div>
+    `;
+  }
+
   // Clears every team's claim + round submissions, then resets the room to
   // a fresh LOBBY (unopened). If fullWipe is true, the team roster itself
   // is cleared too, so the next class starts from an empty add-team screen.
@@ -713,6 +772,8 @@ html, body { height: 100%; margin: 0; }
         <div class="si-team-list" id="si-fac-team-list"></div>
       </div>
 
+      ${state.phase === 'RESOLVED' ? '<div id="si-fac-results"></div>' : ''}
+
       <div class="si-actions">
         ${facilitatorActionHtml(state, teams)}
         <button class="si-btn si-btn-ghost" id="si-end-game">End game</button>
@@ -766,6 +827,11 @@ html, body { height: 100%; margin: 0; }
     }
 
     await refreshFacilitatorTeamList(teams);
+
+    if (state.phase === 'RESOLVED') {
+      const resultsEl = document.getElementById('si-fac-results');
+      if (resultsEl) resultsEl.innerHTML = await buildFacilitatorResultsHtml(state.round || 1, teams);
+    }
 
     startPolling(async () => {
       if (currentScreen.name !== 'facilitator') return;
@@ -973,21 +1039,30 @@ html, body { height: 100%; margin: 0; }
     stopPolling();
     const state = await getRoomState();
 
-    if (!state || state.phase !== 'COMMITTING') {
-      const message = (state && state.phase && state.phase !== 'LOBBY')
-        ? `Round is ${state.phase.toLowerCase()} — next screens aren't built yet.`
-        : 'Waiting for the facilitator to start Round 1.';
-      renderTeamWaiting(teamId, teamName, message);
+    if (!state || state.phase === 'LOBBY' || !state.opened) {
+      renderTeamWaiting(teamId, teamName, 'Waiting for the facilitator to start Round 1.');
       return;
     }
 
     const round = state.round || 1;
-    const submission = await getRoundSubmission(teamId, round);
-    if (submission) {
-      renderTeamSubmitted(teamName, submission);
+
+    if (state.phase === 'COMMITTING') {
+      const submission = await getRoundSubmission(teamId, round);
+      if (submission) {
+        renderTeamSubmitted(teamName, submission);
+        return;
+      }
+      renderTeamCommitPicker(teamId, teamName, round);
       return;
     }
-    renderTeamCommitPicker(teamId, teamName, round);
+
+    if (state.phase === 'RESOLVED') {
+      const submission = await getRoundSubmission(teamId, round);
+      renderTeamResults(teamId, teamName, round, submission);
+      return;
+    }
+
+    renderTeamWaiting(teamId, teamName, `Round is ${state.phase.toLowerCase()} — next screens aren't built yet.`);
   }
 
   function renderTeamWaiting(teamId, teamName, message) {
@@ -1147,6 +1222,56 @@ html, body { height: 100%; margin: 0; }
         <p style="color:var(--fog); font-size:0.8rem; margin:0;">Your picks are locked until the facilitator resolves the round.</p>
       </div>
     `;
+  }
+
+  // ---- Team results (round RESOLVED — shows only this team's own commitment) ----
+
+  function renderTeamResults(teamId, teamName, round, submission) {
+    currentScreen = { name: 'team-results', teamId };
+    stopPolling();
+
+    if (!submission || submission.autoFailed) {
+      view.innerHTML = `
+        <div class="si-header">
+          <p class="si-eyebrow">Round ${round} — resolved</p>
+          <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+        </div>
+        <div class="si-card">
+          <p class="si-eyebrow" style="margin-bottom:12px;">No commitment on record</p>
+          <p style="color:var(--fog); font-size:0.9rem; margin:0;">${submission ? "You didn't submit before the round was resolved — this counted as no commitment." : "No submission was found for this round."}</p>
+        </div>
+        <div class="si-footer-note">
+          <button class="si-back-link" id="si-back">← not my team, go back</button>
+        </div>
+      `;
+      document.getElementById('si-back').onclick = renderTeamPicker;
+      return;
+    }
+
+    const storyNames = submission.stories.map(id => {
+      const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
+      return s ? s.name : id;
+    });
+
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Round ${round} — resolved</p>
+        <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+      </div>
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:12px;">Your commitment</p>
+        ${storyNames.length
+          ? `<div class="si-team-list">${storyNames.map(n => `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(n)}</span></div>`).join('')}</div>`
+          : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">No stories picked.</p>`}
+        <p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">
+          ${submission.spike ? 'Spike: yes. ' : ''}${submission.crunch ? 'Crunch: yes. ' : ''}Total: <span class="si-mono">${submission.totalPoints} pts</span>
+        </p>
+      </div>
+      <div class="si-footer-note">
+        <button class="si-back-link" id="si-back">← not my team, go back</button>
+      </div>
+    `;
+    document.getElementById('si-back').onclick = renderTeamPicker;
   }
 
   // ---------- Dev reset ----------
