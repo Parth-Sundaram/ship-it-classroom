@@ -552,6 +552,31 @@ html, body { height: 100%; margin: 0; }
     await sharedSet('team:' + teamId + ':round' + round, data);
   }
 
+  // Auto-fails any team that hasn't submitted (records a zero commitment,
+  // tagged autoFailed so it's visibly distinct from a real zero-pick
+  // submission), then flips the room into RESOLVED. Facilitator can call
+  // this at any time — doesn't wait for 100% submission.
+  async function resolveRound(round, teams) {
+    const existing = await Promise.all(teams.map(t => getRoundSubmission(t.id, round)));
+    await Promise.all(teams.map((t, i) => {
+      if (existing[i]) return Promise.resolve();
+      return setRoundSubmission(t.id, round, {
+        teamId: t.id,
+        round,
+        stories: [],
+        spike: false,
+        crunch: false,
+        totalPoints: 0,
+        autoFailed: true,
+        submittedAt: Date.now()
+      });
+    }));
+    const state = (await getRoomState()) || { phase: 'COMMITTING', opened: true };
+    state.phase = 'RESOLVED';
+    await setRoomState(state);
+    return state;
+  }
+
   // ---------- Polling ----------
 
   function stopPolling() {
@@ -631,7 +656,10 @@ html, body { height: 100%; margin: 0; }
       return `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`;
     }
     if (state.phase === 'COMMITTING') {
-      return `<span class="si-pill open" style="padding:8px 14px;">Round ${state.round || 1} — teams committing</span>`;
+      return `<button class="si-btn si-btn-primary" id="si-resolve-round">Resolve round ${state.round || 1}</button>`;
+    }
+    if (state.phase === 'RESOLVED') {
+      return `<span class="si-pill open" style="padding:8px 14px;">Round ${state.round || 1} resolved</span>`;
     }
     return `<span class="si-pill open" style="padding:8px 14px;">Room open</span>
       <button class="si-btn si-btn-primary" id="si-open-round1" ${teams.length ? '' : 'disabled'}>Open Round 1 — start committing</button>`;
@@ -639,6 +667,7 @@ html, body { height: 100%; margin: 0; }
 
   function facilitatorHeadline(state) {
     if (state.phase === 'COMMITTING') return `Round ${state.round || 1} — committing`;
+    if (state.phase === 'RESOLVED') return `Round ${state.round || 1} — resolved`;
     if (state.opened) return 'Room open for sign-in';
     return 'Setting up the room';
   }
@@ -698,6 +727,13 @@ html, body { height: 100%; margin: 0; }
       };
     }
 
+    const resolveBtn = document.getElementById('si-resolve-round');
+    if (resolveBtn) {
+      resolveBtn.onclick = async () => {
+        await resolveRound(state.round || 1, teams);
+        renderFacilitatorDashboard();
+      };
+    }
     await refreshFacilitatorTeamList(teams);
 
     startPolling(async () => {
