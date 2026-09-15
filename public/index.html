@@ -141,6 +141,8 @@ html, body { height: 100%; margin: 0; }
 
 .si-team-row:hover { border-color: var(--indigo); }
 .si-team-row.claimed { background: var(--bone); }
+.si-team-row:disabled { opacity: 0.4; cursor: not-allowed; }
+.si-team-row:disabled:hover { border-color: var(--rule); }
 
 .si-team-row-fac {
   cursor: default;
@@ -229,6 +231,7 @@ html, body { height: 100%; margin: 0; }
   gap: 10px;
   margin-top: 18px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 /* roster editor */
@@ -294,7 +297,7 @@ html, body { height: 100%; margin: 0; }
   flex-shrink: 0;
 }
 
-/* team view stub */
+/* team view */
 .si-you-are {
   font-family: 'Newsreader', serif;
   font-size: 2rem;
@@ -372,6 +375,21 @@ html, body { height: 100%; margin: 0; }
   const DEVICE_ROLE_KEY = 'device:role';
   const POLL_MS = 2500;
   const FACILITATOR_PIN = '2358';
+
+  // Placeholder game data — the real backlog/capacity/scoring rules live in
+  // the other thread. Shapes here (ids, points) are what round submissions
+  // are built from, so swapping in real data later should just mean
+  // replacing this block, not touching the screens below.
+  const PLACEHOLDER_CAPACITY = 8;
+  const SPIKE_COST = 2;
+  const PLACEHOLDER_BACKLOG = [
+    { id: 'story-login-bug', name: 'Fix login bug', points: 2 },
+    { id: 'story-search-filter', name: 'Add search filter', points: 3 },
+    { id: 'story-api-refactor', name: 'Refactor API layer', points: 5 },
+    { id: 'story-onboarding', name: 'Update onboarding flow', points: 3 },
+    { id: 'story-payment-retry', name: 'Payment retry logic', points: 4 },
+    { id: 'story-dark-mode', name: 'Dark mode toggle', points: 2 }
+  ];
 
   let deviceId = null;
   let pollTimer = null;
@@ -473,6 +491,15 @@ html, body { height: 100%; margin: 0; }
     return state;
   }
 
+  async function startCommitRound(roundNum) {
+    const state = (await getRoomState()) || { phase: 'LOBBY', opened: true };
+    state.opened = true;
+    state.phase = 'COMMITTING';
+    state.round = roundNum;
+    await setRoomState(state);
+    return state;
+  }
+
   // ---------- Teams ----------
 
   async function getTeams() {
@@ -513,6 +540,16 @@ html, body { height: 100%; margin: 0; }
 
   async function setClaim(teamId, dId) {
     await sharedSet('team:' + teamId + ':claim', { deviceId: dId, claimedAt: Date.now() });
+  }
+
+  // ---------- Round submissions ----------
+
+  async function getRoundSubmission(teamId, round) {
+    try { return await sharedGet('team:' + teamId + ':round' + round); } catch (e) { return null; }
+  }
+
+  async function setRoundSubmission(teamId, round, data) {
+    await sharedSet('team:' + teamId + ':round' + round, data);
   }
 
   // ---------- Polling ----------
@@ -587,7 +624,24 @@ html, body { height: 100%; margin: 0; }
     renderFacilitatorDashboard();
   }
 
-  // ---- Facilitator dashboard (Phase 2: roster setup + start room) ----
+  // ---- Facilitator dashboard (roster setup + start room + open round 1) ----
+
+  function facilitatorActionHtml(state, teams) {
+    if (!state.opened) {
+      return `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`;
+    }
+    if (state.phase === 'COMMITTING') {
+      return `<span class="si-pill open" style="padding:8px 14px;">Round ${state.round || 1} — teams committing</span>`;
+    }
+    return `<span class="si-pill open" style="padding:8px 14px;">Room open</span>
+      <button class="si-btn si-btn-primary" id="si-open-round1" ${teams.length ? '' : 'disabled'}>Open Round 1 — start committing</button>`;
+  }
+
+  function facilitatorHeadline(state) {
+    if (state.phase === 'COMMITTING') return `Round ${state.round || 1} — committing`;
+    if (state.opened) return 'Room open for sign-in';
+    return 'Setting up the room';
+  }
 
   async function renderFacilitatorDashboard() {
     currentScreen = { name: 'facilitator' };
@@ -598,7 +652,7 @@ html, body { height: 100%; margin: 0; }
       <div class="si-status-row"><span class="si-status-dot"></span> live · polling every ${POLL_MS / 1000}s</div>
       <div class="si-header">
         <p class="si-eyebrow">Facilitator</p>
-        <h1>${state.opened ? 'Room open for sign-in' : 'Setting up the room'}</h1>
+        <h1>${facilitatorHeadline(state)}</h1>
       </div>
 
       <div class="si-card">
@@ -614,13 +668,7 @@ html, body { height: 100%; margin: 0; }
         <div class="si-team-list" id="si-fac-team-list"></div>
       </div>
 
-      <div class="si-actions">
-        ${
-          state.opened
-            ? `<span class="si-pill open" style="padding:8px 14px;">Room is open — teams can join</span>`
-            : `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`
-        }
-      </div>
+      <div class="si-actions">${facilitatorActionHtml(state, teams)}</div>
 
       <div class="si-footer-note">
         <button class="si-back-link" id="si-back">← leave this view</button>
@@ -638,6 +686,14 @@ html, body { height: 100%; margin: 0; }
     if (startBtn) {
       startBtn.onclick = async () => {
         await openRoom();
+        renderFacilitatorDashboard();
+      };
+    }
+
+    const openRoundBtn = document.getElementById('si-open-round1');
+    if (openRoundBtn) {
+      openRoundBtn.onclick = async () => {
+        await startCommitRound(1);
         renderFacilitatorDashboard();
       };
     }
@@ -739,11 +795,7 @@ html, body { height: 100%; margin: 0; }
       if (!ok) return;
     }
     await removeTeam(team.id);
-    const t = await getTeams();
-    await refreshFacilitatorTeamList(t);
-    // keep the header/start-room button state (team count) in sync
-    const state = (await getRoomState()) || { phase: 'LOBBY', opened: false };
-    if (!state.opened) renderFacilitatorDashboard();
+    renderFacilitatorDashboard();
   }
 
   // ---- Team join flow ----
@@ -821,7 +873,7 @@ html, body { height: 100%; margin: 0; }
     }
     await setClaim(team.id, dId);
     await setCachedRole({ role: 'team', teamId: team.id, teamName: team.name });
-    renderTeamStub(team.id, team.name);
+    renderTeamEntry(team.id, team.name);
   }
 
   function renderOverrideNotice(team, claim) {
@@ -843,14 +895,36 @@ html, body { height: 100%; margin: 0; }
       const dId = await getDeviceId();
       await setClaim(team.id, dId);
       await setCachedRole({ role: 'team', teamId: team.id, teamName: team.name });
-      renderTeamStub(team.id, team.name);
+      renderTeamEntry(team.id, team.name);
     };
     document.getElementById('si-cancel').onclick = renderTeamPicker;
   }
 
-  async function renderTeamStub(teamId, teamName) {
-    currentScreen = { name: 'team', teamId };
+  // ---- Team home: routes to waiting / commit picker / submitted based on room phase ----
+
+  async function renderTeamEntry(teamId, teamName) {
     stopPolling();
+    const state = await getRoomState();
+
+    if (!state || state.phase !== 'COMMITTING') {
+      const message = (state && state.phase && state.phase !== 'LOBBY')
+        ? `Round is ${state.phase.toLowerCase()} — next screens aren't built yet.`
+        : 'Waiting for the facilitator to start Round 1.';
+      renderTeamWaiting(teamId, teamName, message);
+      return;
+    }
+
+    const round = state.round || 1;
+    const submission = await getRoundSubmission(teamId, round);
+    if (submission) {
+      renderTeamSubmitted(teamName, submission);
+      return;
+    }
+    renderTeamCommitPicker(teamId, teamName, round);
+  }
+
+  function renderTeamWaiting(teamId, teamName, message) {
+    currentScreen = { name: 'team-waiting', teamId };
     view.innerHTML = `
       <div class="si-status-row"><span class="si-status-dot"></span> live · polling every ${POLL_MS / 1000}s</div>
       <div class="si-header">
@@ -858,13 +932,154 @@ html, body { height: 100%; margin: 0; }
         <h1 class="si-you-are">${escapeHtml(teamName)}</h1>
       </div>
       <div class="si-card">
-        <p style="color:var(--fog); font-size:0.9rem; margin:0;">Game screens aren't wired up yet — this confirms your claim is locked in and synced.</p>
+        <p style="color:var(--fog); font-size:0.9rem; margin:0;">${escapeHtml(message)}</p>
       </div>
       <div class="si-footer-note">
         <button class="si-back-link" id="si-back">← not my team, go back</button>
       </div>
     `;
     document.getElementById('si-back').onclick = renderTeamPicker;
+    startPolling(async () => {
+      if (currentScreen.name !== 'team-waiting' || currentScreen.teamId !== teamId) return;
+      await renderTeamEntry(teamId, teamName);
+    });
+  }
+
+  function renderTeamCommitPicker(teamId, teamName, round) {
+    currentScreen = { name: 'team-commit', teamId };
+    stopPolling();
+
+    const local = { selected: new Set(), spike: false, crunch: false, submitting: false };
+
+    function total() {
+      let t = 0;
+      PLACEHOLDER_BACKLOG.forEach(s => { if (local.selected.has(s.id)) t += s.points; });
+      if (local.spike) t += SPIKE_COST;
+      return t;
+    }
+
+    function draw() {
+      const capacity = PLACEHOLDER_CAPACITY;
+      const t = total();
+
+      view.innerHTML = `
+        <div class="si-header">
+          <p class="si-eyebrow">Round ${round} — commit</p>
+          <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+        </div>
+        <div class="si-card">
+          <p class="si-eyebrow" style="margin-bottom:12px;">Capacity — <span class="si-mono">${t} / ${capacity} pts</span></p>
+          <div class="si-team-list" id="si-backlog-list"></div>
+        </div>
+        <div class="si-card">
+          <div class="si-team-list">
+            <button class="si-team-row" id="si-spike-toggle">
+              <span class="si-team-name">Spike (+${SPIKE_COST} pts)</span>
+              ${local.spike ? '<span class="si-pill taken">on</span>' : '<span class="si-pill open">off</span>'}
+            </button>
+            <button class="si-team-row" id="si-crunch-toggle">
+              <span class="si-team-name">Crunch</span>
+              ${local.crunch ? '<span class="si-pill taken">on</span>' : '<span class="si-pill open">off</span>'}
+            </button>
+          </div>
+        </div>
+        <div class="si-actions">
+          <button class="si-btn si-btn-primary" id="si-submit-commit" ${local.submitting ? 'disabled' : ''}>
+            ${local.submitting ? 'Submitting…' : 'Submit'}
+          </button>
+        </div>
+        <div class="si-footer-note">
+          <button class="si-back-link" id="si-back">← not my team, go back</button>
+        </div>
+      `;
+
+      const list = document.getElementById('si-backlog-list');
+      list.innerHTML = PLACEHOLDER_BACKLOG.map(s => {
+        const isSel = local.selected.has(s.id);
+        const wouldExceed = !isSel && (t + s.points > capacity);
+        return `<button class="si-team-row${isSel ? ' claimed' : ''}" data-story-id="${s.id}" ${wouldExceed ? 'disabled' : ''}>
+          <span class="si-team-name">${escapeHtml(s.name)} — ${s.points} pt${s.points === 1 ? '' : 's'}</span>
+          ${isSel ? '<span class="si-pill taken">picked</span>' : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`}
+        </button>`;
+      }).join('');
+
+      PLACEHOLDER_BACKLOG.forEach(s => {
+        const el = list.querySelector(`[data-story-id="${s.id}"]`);
+        if (el && !el.disabled) {
+          el.onclick = () => {
+            if (local.selected.has(s.id)) local.selected.delete(s.id);
+            else local.selected.add(s.id);
+            draw();
+          };
+        }
+      });
+
+      document.getElementById('si-spike-toggle').onclick = () => {
+        if (!local.spike && t + SPIKE_COST > capacity) return;
+        local.spike = !local.spike;
+        draw();
+      };
+      document.getElementById('si-crunch-toggle').onclick = () => {
+        local.crunch = !local.crunch;
+        draw();
+      };
+      document.getElementById('si-submit-commit').onclick = submit;
+      document.getElementById('si-back').onclick = renderTeamPicker;
+    }
+
+    async function submit() {
+      if (local.submitting) return;
+      local.submitting = true;
+      draw();
+      const payload = {
+        teamId,
+        round,
+        stories: Array.from(local.selected),
+        spike: local.spike,
+        crunch: local.crunch,
+        totalPoints: total(),
+        submittedAt: Date.now()
+      };
+      try {
+        await setRoundSubmission(teamId, round, payload);
+        renderTeamSubmitted(teamName, payload);
+      } catch (e) {
+        local.submitting = false;
+        draw();
+        alert('Could not submit — check your connection and try again.');
+      }
+    }
+
+    draw();
+  }
+
+  function renderTeamSubmitted(teamName, submission) {
+    currentScreen = { name: 'team-submitted' };
+    stopPolling();
+
+    const storyNames = submission.stories.map(id => {
+      const s = PLACEHOLDER_BACKLOG.find(x => x.id === id);
+      return s ? s.name : id;
+    });
+
+    view.innerHTML = `
+      <div class="si-header">
+        <p class="si-eyebrow">Round ${submission.round} — submitted</p>
+        <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
+      </div>
+      <div class="si-card">
+        <p class="si-eyebrow" style="margin-bottom:12px;">✓ submitted — waiting on the facilitator</p>
+        ${storyNames.length
+          ? `<div class="si-team-list">${storyNames.map(n => `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(n)}</span></div>`).join('')}</div>`
+          : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">No stories picked.</p>`}
+        <p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">
+          ${submission.spike ? 'Spike: yes. ' : ''}${submission.crunch ? 'Crunch: yes. ' : ''}Total: <span class="si-mono">${submission.totalPoints} pts</span>
+        </p>
+      </div>
+      <div class="si-footer-note">
+        <p style="color:var(--fog); font-size:0.8rem; margin:0;">Your picks are locked until the facilitator resolves the round.</p>
+      </div>
+    `;
   }
 
   // ---------- Dev reset ----------
@@ -894,7 +1109,7 @@ html, body { height: 100%; margin: 0; }
     if (cached && cached.role === 'facilitator' && cached.pinPassed) {
       renderFacilitatorDashboard();
     } else if (cached && cached.role === 'team') {
-      renderTeamStub(cached.teamId, cached.teamName);
+      renderTeamEntry(cached.teamId, cached.teamName);
     } else {
       renderLanding();
     }
