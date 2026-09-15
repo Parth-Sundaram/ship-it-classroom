@@ -577,6 +577,22 @@ html, body { height: 100%; margin: 0; }
     return state;
   }
 
+  // Clears every team's claim + round submissions, then resets the room to
+  // a fresh LOBBY (unopened). If fullWipe is true, the team roster itself
+  // is cleared too, so the next class starts from an empty add-team screen.
+  // Note: only clears round1 for now — extend this list if/when round 2+
+  // submissions exist.
+  async function endGame(fullWipe, teams) {
+    await Promise.all(teams.flatMap(t => [
+      sharedDelete('team:' + t.id + ':claim'),
+      sharedDelete('team:' + t.id + ':round1')
+    ]));
+    if (fullWipe) {
+      await setTeams([]);
+    }
+    await setRoomState({ phase: 'LOBBY', opened: false });
+  }
+
   // ---------- Polling ----------
 
   function stopPolling() {
@@ -697,7 +713,10 @@ html, body { height: 100%; margin: 0; }
         <div class="si-team-list" id="si-fac-team-list"></div>
       </div>
 
-      <div class="si-actions">${facilitatorActionHtml(state, teams)}</div>
+      <div class="si-actions">
+        ${facilitatorActionHtml(state, teams)}
+        <button class="si-btn si-btn-ghost" id="si-end-game">End game</button>
+      </div>
 
       <div class="si-footer-note">
         <button class="si-back-link" id="si-back">← leave this view</button>
@@ -734,6 +753,18 @@ html, body { height: 100%; margin: 0; }
         renderFacilitatorDashboard();
       };
     }
+
+    const endGameBtn = document.getElementById('si-end-game');
+    if (endGameBtn) {
+      endGameBtn.onclick = async () => {
+        const proceed = confirm('End the game and reset the room?');
+        if (!proceed) return;
+        const fullWipe = confirm('Also clear the team roster?\n\nOK = wipe everything, ready for a new class.\nCancel = keep the same teams, just reset progress for a rematch.');
+        await endGame(fullWipe, teams);
+        renderFacilitatorDashboard();
+      };
+    }
+
     await refreshFacilitatorTeamList(teams);
 
     startPolling(async () => {
