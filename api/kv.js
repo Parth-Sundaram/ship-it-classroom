@@ -1,16 +1,37 @@
-import { kv } from '@vercel/kv';
+import { Redis } from '@upstash/redis';
 
-// Minimal REST wrapper around Vercel KV for the shared room state
-// (room:state, room:teams, team:<id>:claim, ...). Anything device-local
-// (cached role, PIN-passed flag, device id) never hits this endpoint —
+// Minimal REST wrapper around Upstash Redis for the shared room state
+// (room:state, room:teams, team:<id>:claim, team:<id>:round<n>, ...).
+// Anything device-local (cached role, device id) never hits this endpoint —
 // the client keeps that in localStorage instead.
+//
+// Works with either credential pair, so it doesn't matter how you provisioned:
+//   - Vercel Marketplace "Upstash" integration  -> KV_REST_API_URL / KV_REST_API_TOKEN
+//   - a standalone Upstash Redis database        -> UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+
+let _redis = null;
+function getRedis() {
+  if (_redis) return _redis;
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    throw new Error(
+      'Missing Upstash credentials. Set KV_REST_API_URL + KV_REST_API_TOKEN ' +
+      '(Vercel–Upstash integration) or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN.'
+    );
+  }
+  _redis = new Redis({ url, token });
+  return _redis;
+}
 
 export default async function handler(req, res) {
   try {
+    const redis = getRedis();
+
     if (req.method === 'GET') {
-      const { key } = req.query;
+      const key = req.query && req.query.key;
       if (!key) return res.status(400).json({ error: 'key required' });
-      const value = await kv.get(key);
+      const value = await redis.get(key); // auto-deserializes JSON values
       if (value === null || value === undefined) {
         return res.status(404).json({ error: 'not found' });
       }
@@ -18,16 +39,20 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { key, value } = req.body || {};
+      let body = req.body;
+      if (typeof body === 'string') {
+        try { body = JSON.parse(body); } catch { body = {}; }
+      }
+      const { key, value } = body || {};
       if (!key) return res.status(400).json({ error: 'key required' });
-      await kv.set(key, value);
+      await redis.set(key, value); // objects/arrays auto-serialized to JSON
       return res.status(200).json({ key, value });
     }
 
     if (req.method === 'DELETE') {
-      const { key } = req.query;
+      const key = req.query && req.query.key;
       if (!key) return res.status(400).json({ error: 'key required' });
-      await kv.del(key);
+      await redis.del(key);
       return res.status(200).json({ key, deleted: true });
     }
 
@@ -35,6 +60,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'method not allowed' });
   } catch (err) {
     console.error('kv api error:', err);
-    return res.status(500).json({ error: 'storage error' });
+    return res.status(500).json({ error: 'storage error', detail: String(err && err.message || err) });
   }
 }
