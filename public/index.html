@@ -2750,31 +2750,92 @@ var qrcode = function() {
   const TIMER_EXTEND_SECONDS = 30;  // "+30s" bump on the facilitator dashboard
 
   // ============================================================
-  // Ship It — real engine (tuned v2, human-input port).
-  // Teams submit commit/spike/crunch; the facilitator's device runs
+  // Ship It — engine, rev. 2 (see the handoff doc for the full design
+  // history). Capped-floor scoring (clear target = flat bonus, shipping past
+  // it earns nothing more), crunch as an unconditional/compounding trap,
+  // slack as same-round insurance against overruns, 4 rounds each with its
+  // own sprint backlog. Spike is built but disabled — see SPIKE_ENABLED.
+  // Teams submit commit/crunch; the facilitator's device runs
   // resolveTeamRound() for everyone so dice are single-sourced.
   // ============================================================
-  const BACKLOG = [
-    { id:'S1',  name:'User accounts',         val:4,  est:3 },
-    { id:'S2',  name:'Product search',        val:7,  est:5 },
-    { id:'S3',  name:'Cart & checkout',       val:8,  est:6, linked:true },
-    { id:'S4',  name:'Recommendation engine', val:10, est:8 },
-    { id:'S5',  name:'Ratings & reviews',     val:3,  est:2, polish:true },
-    { id:'S6',  name:'Order history',         val:4,  est:4, linked:true },
-    { id:'S7',  name:'Wishlist',              val:2,  est:2, polish:true },
-    { id:'S8',  name:'Admin dashboard',       val:5,  est:5 },
-    { id:'S9',  name:'One-click reorder',     val:5,  est:3, linked:true },
-    { id:'S10', name:'Polish / dark mode',    val:2,  est:1, polish:true },
+  // Sprint model (§5.5): each round is its own sprint with a small, independent
+  // backlog — no story carries between rounds, so story IDs are globally unique
+  // (round-prefixed) and there is no cross-round completion state to track.
+  // Every round's safe tier (est<=2, no variance roll) deliberately sums to well
+  // under that round's CFG.targets entry, so a team can't clear on zero-risk
+  // stories alone — see shipit-sim.js stats in the handoff doc for the numbers
+  // behind this backlog set.
+  const SPRINTS = [
+    // Round 1 — Storefront basics. maxAchievable(cap 20)=28, safe-tier sum=8.
+    [
+      { id:'R1-S1', name:'Product listing page',        val:5, est:3 },
+      { id:'R1-S2', name:'Shopping cart',                val:7, est:5, linked:true },
+      { id:'R1-S3', name:'Checkout flow',                val:8, est:6, linked:true },
+      { id:'R1-S4', name:'Search bar',                   val:4, est:3 },
+      { id:'R1-S5', name:'Order confirmation email',     val:2, est:2, polish:true },
+      { id:'R1-S6', name:'Basic account login',          val:3, est:2 },
+      { id:'R1-S7', name:'Mobile responsive layout',     val:3, est:2, polish:true },
+      { id:'R1-S8', name:'Payment gateway integration',  val:9, est:7, linked:true },
+    ],
+    // Round 2 — Search & discovery. maxAchievable(cap 20)=28, safe-tier sum=8.
+    [
+      { id:'R2-S1', name:'Search bar upgrade',           val:5, est:3 },
+      { id:'R2-S2', name:'Filters & sorting',             val:4, est:3 },
+      { id:'R2-S3', name:'Product recommendations',       val:9, est:7 },
+      { id:'R2-S4', name:'Recently viewed',               val:3, est:2, polish:true },
+      { id:'R2-S5', name:'Autocomplete suggestions',      val:3, est:2 },
+      { id:'R2-S6', name:'Category pages',                val:6, est:5, linked:true },
+      { id:'R2-S7', name:'Trending items widget',         val:2, est:1, polish:true },
+      { id:'R2-S8', name:'Personalized homepage',         val:8, est:6, linked:true },
+    ],
+    // Round 3 — Engagement & retention. maxAchievable(cap 20)=25, safe-tier sum=7.
+    [
+      { id:'R3-S1', name:'Ratings & reviews',             val:4, est:3 },
+      { id:'R3-S2', name:'Wishlist',                      val:3, est:2 },
+      { id:'R3-S3', name:'Loyalty points program',        val:7, est:6, linked:true },
+      { id:'R3-S4', name:'Push notifications',            val:5, est:4 },
+      { id:'R3-S5', name:'Referral program',              val:6, est:5, linked:true },
+      { id:'R3-S6', name:'Dark mode / theming',           val:2, est:1, polish:true },
+      { id:'R3-S7', name:'Email digest',                  val:2, est:2, polish:true },
+      { id:'R3-S8', name:'Social sharing',                val:8, est:7 },
+    ],
+    // Round 4 — Scale & polish (final round). maxAchievable(cap 20)=27, safe-tier sum=5.
+    [
+      { id:'R4-S1', name:'Admin dashboard',               val:5, est:4 },
+      { id:'R4-S2', name:'Bulk order tools',              val:6, est:5, linked:true },
+      { id:'R4-S3', name:'Fraud detection',               val:8, est:7 },
+      { id:'R4-S4', name:'One-click reorder',             val:5, est:3, linked:true },
+      { id:'R4-S5', name:'Accessibility pass',            val:3, est:2, polish:true },
+      { id:'R4-S6', name:'Performance tuning',            val:4, est:3 },
+      { id:'R4-S7', name:'Multi-currency support',        val:7, est:6, linked:true },
+      { id:'R4-S8', name:'Seasonal theme pack',           val:2, est:1, polish:true },
+    ],
   ];
+  const ALL_STORIES = SPRINTS.flat();
+  function backlogForRound(roundIndex){ return SPRINTS[roundIndex] || []; }
   const CFG = {
     capacity:20,
-    targets:[13,15],                 // release target (shipped value) per round; length = # rounds
+    // Targets, one per round/backlog (§5.5: 4 rounds, one fresh sprint backlog
+    // each). Set at ~68% of each round's own maxAchievable (best value
+    // obtainable spending full capacity on that round's stories — see SPRINTS
+    // comments for the per-round numbers), per §5.7's guidance that the ratio
+    // which matters is target/maxAchievable, not target/capacity. Confirmed
+    // via shipit-sim.js (item 8, 30000-trial run): at these targets a
+    // deliberate ~25%-buffer strategy wins ~91% of simulated games against a
+    // pack-to-capacity strategy, purely by avoiding broken promises (packing
+    // tight breaks something in ~89% of rounds even though it still usually
+    // clears the number) — see the CHOSEN CONFIG block in shipit-sim.js for
+    // the full comparison and the sweep that led here.
+    targets:[19,19,17,18],
     missPenalty:8,
     // clearBonus is a flat bonus for clearing target, dwarfing the capped value
     // below it — this + the min(shipped,target) cap in evaluate() is what makes
-    // clearing a floor instead of a ramp. Placeholder pending the rev.2 retune
-    // (§5.1/§5.7 of the handoff doc) once targets move to 4 rounds.
-    clearBonus:20,
+    // clearing a floor instead of a ramp. 30 sits at ~1.6-1.9x the per-round
+    // targets, matching §5.1's "roughly 1.5-2x target" guidance; confirmed via
+    // the same shipit-sim.js sweep as targets above (win-rate margin for the
+    // buffer strategy was stable across clearBonus 20/26/30/34, so this was
+    // picked from the middle of that range rather than an extreme).
+    clearBonus:30,
     brokenPenalty:2,
     spikeCost:2,
     // crunchNextPenalty is now a PER-STREAK multiplier, not a flat hit — see
@@ -2789,6 +2850,15 @@ var qrcode = function() {
     // Placeholders pending retune.
     slackCarryThreshold:6, slackCarryAmount:2,
   };
+  // SPIKE (disabled — reserved for future estimation/spikes scope, per the
+  // handoff doc). One switch gates every spike-related effect and UI element
+  // below (each gated spot carries its own "SPIKE (disabled)" comment so it's
+  // easy to find) — flip this to true and the feature returns intact: the
+  // variance-skip in workStory, the capacity surcharge, the commit-screen
+  // toggle and its cost, autoPickCommit's spike-the-big-stories fallback, and
+  // the spike tags on the submitted/result/leaderboard screens (those already
+  // no-op safely today since spikeIds/spikes stay empty while this is false).
+  const SPIKE_ENABLED = false;
   const CURVEBALLS = {
     none:        { label:'Calm sprint',     desc:'No curveball this round.' },
     security:    { label:'Security review',  desc:'Big stories (est 6+) cost +2 — extra hardening.' },
@@ -2799,16 +2869,20 @@ var qrcode = function() {
   const CB_KEYS = ['security','pivot','integration','turnover','none'];
   function randomCurveball(){ return CB_KEYS[Math.floor(Math.random()*CB_KEYS.length)]; }
 
-  function byId(id){ return BACKLOG.find(s => s.id === id); }
+  function byId(id){ return ALL_STORIES.find(s => s.id === id); }
   function d6(){ return 1 + Math.floor(Math.random()*6); }
   function tierOf(e){ return e<=2 ? 'safe' : (e<=5 ? 'mid' : 'big'); }
   function valueOf(s, cb){ return (cb==='pivot' && s.polish) ? s.val*2 : s.val; }
 
   function workStory(s, { spiked, cb, isHi }){
+    // SPIKE (disabled): while SPIKE_ENABLED is false, a story is never treated
+    // as spiked here regardless of what was passed in, so the variance roll
+    // below always runs and the capacity surcharge at the bottom never applies.
+    const effectiveSpiked = SPIKE_ENABLED && spiked;
     const tier = tierOf(s.est);
     let base = s.est;
     let variance = 0, blowup = false;
-    if (!spiked && tier!=='safe'){
+    if (!effectiveSpiked && tier!=='safe'){
       const r = d6();
       if (tier==='mid') variance = r<=3?0:(r<=5?CFG.midHi:CFG.midMax);
       else              variance = r<=3?0:(r<=5?CFG.bigHi:CFG.bigMax);
@@ -2819,7 +2893,7 @@ var qrcode = function() {
     if (cb==='integration' && s.linked) cbMod -= 1;
     if (cb==='turnover' && isHi) cbMod += 2;
     cost += cbMod;
-    if (spiked) cost += CFG.spikeCost;
+    if (effectiveSpiked) cost += CFG.spikeCost;
     return { cost: Math.max(0,cost), variance, blowup };
   }
   function bestCompletion(items, capacity){
@@ -2832,10 +2906,6 @@ var qrcode = function() {
     if (best.score===-Infinity) best={ids:[],rawVal:0,cost:0,score:0};
     return best;
   }
-  function availableStories(completedAll){
-    const done = new Set(completedAll || []);
-    return BACKLOG.filter(s => !done.has(s.id));
-  }
 
   // A legal default commitment for a team that runs out of time with nothing
   // picked (timeout) or never opens the picker (no-show). Fills toward the
@@ -2846,7 +2916,7 @@ var qrcode = function() {
   function autoPickCommit(state, roundIndex){
     const cap = CFG.capacity + (state.carry || 0);
     const target = CFG.targets[roundIndex];
-    const ranked = availableStories(state.completedAll).map(s => {
+    const ranked = backlogForRound(roundIndex).map(s => {
       const est = s.est;
       const tier = tierOf(est);
       return { s, est, tier, density: valueOf(s, null) / Math.max(0.5, est) };
@@ -2855,24 +2925,27 @@ var qrcode = function() {
       b.density - a.density ||                                     // then most value per estimate
       a.est - b.est                                               // then cheaper
     );
-    const commitIds = [], spikeIds = [];
+    const commitIds = [], spikeIds = []; // spikeIds stays empty while SPIKE_ENABLED is false
     let usedEst = 0, plannedVal = 0;
     for (const { s, est, tier } of ranked){
-      const addCost = est + (tier === 'big' ? CFG.spikeCost : 0);
+      // SPIKE (disabled): this used to pay CFG.spikeCost to spike every "big"
+      // story it had to include, removing its blowup risk so the fallback
+      // wasn't sabotaged by bad luck. That protection doesn't exist while
+      // spike is disabled, so auto-pick stops paying for it too.
+      const addCost = est + (SPIKE_ENABLED && tier === 'big' ? CFG.spikeCost : 0);
       if (usedEst + addCost > cap) continue;
       commitIds.push(s.id);
       usedEst += addCost;
       plannedVal += valueOf(s, null);
-      if (tier === 'big') spikeIds.push(s.id);
+      if (SPIKE_ENABLED && tier === 'big') spikeIds.push(s.id);
       if (plannedVal >= target) break; // enough planned value to clear the release
     }
     return { commitIds, spikeIds };
   }
 
   // Resolve one team's round from human inputs.
-  // state = { completedAll:[], carry, cumScore, crunchStreak }
+  // state = { carry, cumScore, crunchStreak }
   function resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state }){
-    const completedAll = new Set(state.completedAll || []);
     const baseCap = CFG.capacity + (state.carry||0);
     let capacity = baseCap;
     const target = CFG.targets[roundIndex];
@@ -2924,8 +2997,6 @@ var qrcode = function() {
       outcome = evaluate(working, capacity);
     }
 
-    outcome.doneIds.forEach(id=>completedAll.add(id));
-
     const roundScore = outcome.score - (crunchBug ? CFG.crunchBugPenalty : 0);
     const brokenIds = working.filter(w=>!outcome.doneIds.has(w.id)).map(w=>w.id);
 
@@ -2972,7 +3043,7 @@ var qrcode = function() {
     const endBonus = isFinal ? -finalCrunchPenalty : 0;
     const finalScore = cumScore + endBonus;
 
-    const newState = { completedAll:[...completedAll], carry:nextCarry, cumScore, crunchStreak };
+    const newState = { carry:nextCarry, cumScore, crunchStreak };
     const log = {
       round: roundIndex+1, cb, target,
       committed: (commitIds||[]).slice(), spikes: [...spikeSet], crunch,
@@ -3151,8 +3222,10 @@ var qrcode = function() {
     await sharedSet('team:' + teamId + ':round' + round, data);
   }
 
-  // Persistent cross-round state (completedAll / carry / cumScore / crunchStreak).
-  function freshTeamState() { return { completedAll: [], carry: 0, cumScore: 0, crunchStreak: 0 }; }
+  // Persistent cross-round state (carry / cumScore / crunchStreak). Sprint
+  // model (§5.5): each round has its own independent backlog, so there is
+  // nothing like completedAll left to carry between rounds.
+  function freshTeamState() { return { carry: 0, cumScore: 0, crunchStreak: 0 }; }
   async function getTeamState(teamId) {
     try { return (await sharedGet('team:' + teamId + ':state')) || freshTeamState(); } catch (e) { return freshTeamState(); }
   }
@@ -3213,7 +3286,7 @@ var qrcode = function() {
     return roomState;
   }
 
-  // Advance to the next commit round (state carries; backlog is filtered by completedAll).
+  // Advance to the next commit round (carry/streak/cumScore persist; each round pulls its own fresh sprint backlog).
   async function startNextRound(teams) {
     const state = (await getRoomState()) || { phase: 'RESOLVED', opened: true, round: 1 };
     const next = (state.round || 1) + 1;
@@ -3273,6 +3346,8 @@ var qrcode = function() {
       const extras = [
         `shipped ${res.shipped}/${res.target}`,
         res.hitTarget ? 'target met' : `missed (−${res.miss})`,
+        // SPIKE (disabled): res.spikes is always empty while SPIKE_ENABLED is
+        // false, so this line never renders anything — left as-is, no change needed.
         res.spikes.length ? `spike ×${res.spikes.length}` : null,
         res.crunched ? (res.crunchBug ? 'crunched (bug!)' : 'crunched') : null,
         res.autoPicked ? 'auto-picked' : null,
@@ -3904,7 +3979,7 @@ var qrcode = function() {
     const room = await getRoomState();
     if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) return;
     let deadline = (room && room.deadline) || (Date.now() + TIMER_SECONDS * 1000);
-    const avail = availableStories(st.completedAll);
+    const avail = backlogForRound(round - 1); // round is 1-indexed here, backlogForRound wants 0-indexed
     const carry = st.carry || 0;                 // negative after a crunch last round, positive after a big-slack round
     const capacity = CFG.capacity + carry;
     const target = CFG.targets[round - 1];
@@ -3917,7 +3992,9 @@ var qrcode = function() {
     function used() {
       let t = 0;
       avail.forEach(s => { if (local.selected.has(s.id)) t += pe(s); });
-      t += local.spikes.size * CFG.spikeCost;
+      // SPIKE (disabled): local.spikes can't gain entries while the toggle
+      // below is gated off, so this is already inert — gated too for clarity.
+      if (SPIKE_ENABLED) t += local.spikes.size * CFG.spikeCost;
       return t;
     }
 
@@ -3951,8 +4028,9 @@ var qrcode = function() {
           <summary>How this works</summary>
           <div class="si-help-body">
             <p><b>Capacity &amp; overruns.</b> You have a capacity budget, and your committed estimates have to fit inside it. But real work is uncertain — bigger stories can overrun their estimate; small ones are safe. If your actual work blows past capacity you can't finish everything you promised, and every broken promise costs points.</p>
+            <p><b>Target &amp; scoring.</b> Ship at least the round's target and you clear it — a flat bonus, the same whether you clear by a little or by a lot. Shipping past target doesn't add extra points. Miss it and you lose points instead. Clearing is the floor to aim for, not a number to maximize.</p>
             <p><b>Slack.</b> Capacity you don't commit elsewhere isn't spent on anything — but if a committed story runs over its estimate, that unclaimed capacity absorbs the overrun instead of breaking your commitment. You won't see it happen; you'll only see that nothing broke. Leave enough of it and clear the target, and a little carries into next round too.</p>
-            <p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>
+            ${SPIKE_ENABLED ? `<p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>` : ''}
             <p><b>Crunch.</b> Ticking crunch always grants +${CFG.crunchGain} capacity this round — whether you end up needing it or not — but it always carries a bug risk, and the capacity you lose next round grows the more rounds in a row you crunch. Overtime is a loan against your future, and the interest compounds.</p>
             <p><b>Curveballs.</b> Each round a random event may shift some costs or values (big stories cost more, polish worth double, and so on). It's revealed when the round resolves.</p>
           </div>
@@ -3973,9 +4051,11 @@ var qrcode = function() {
         const isSpiked = local.spikes.has(s.id);
         const wouldExceed = !isSel && (t + pe(s) > capacity);
         const est = pe(s);
+        // SPIKE (disabled): the toggle pill only renders while SPIKE_ENABLED —
+        // a picked story just shows "picked" with no spike affordance.
         const right = isSel
           ? `<span class="si-fac-row-actions">
-               <span class="si-pill${isSpiked ? ' taken' : ''}" data-action="spike" data-story-id="${s.id}" style="cursor:pointer;">${isSpiked ? '🛡 safe' : 'spike +' + CFG.spikeCost}</span>
+               ${SPIKE_ENABLED ? `<span class="si-pill${isSpiked ? ' taken' : ''}" data-action="spike" data-story-id="${s.id}" style="cursor:pointer;">${isSpiked ? '🛡 safe' : 'spike +' + CFG.spikeCost}</span>` : ''}
                <span class="si-pill taken">picked</span>
              </span>`
           : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`;
@@ -4000,7 +4080,10 @@ var qrcode = function() {
           draw();
         };
       });
-      list.querySelectorAll('[data-action="spike"]').forEach(el => {
+      // SPIKE (disabled): no [data-action="spike"] elements exist in the DOM
+      // while SPIKE_ENABLED is false (see the backlog row markup above), so
+      // this handler has nothing to wire up — gated to match.
+      if (SPIKE_ENABLED) list.querySelectorAll('[data-action="spike"]').forEach(el => {
         el.onclick = (e) => {
           e.stopPropagation();
           const id = el.getAttribute('data-story-id');
@@ -4027,7 +4110,9 @@ var qrcode = function() {
       const payload = {
         teamId, round,
         commitIds: Array.from(local.selected),
-        spikeIds: Array.from(local.spikes),
+        // SPIKE (disabled): local.spikes never gains entries while the toggle
+        // is gated off, so this always submits empty — gated explicitly too.
+        spikeIds: SPIKE_ENABLED ? Array.from(local.spikes) : [],
         crunch: local.crunch,
         timedOut: !!(flags && flags.timedOut),
         autoPicked: !!(flags && flags.autoPicked),
@@ -4084,6 +4169,8 @@ var qrcode = function() {
   }
 
   function commitRowsHtml(commitIds, spikeIds) {
+    // SPIKE (disabled): spikeIds is always [] while SPIKE_ENABLED is false, so
+    // spikeSet is always empty and the tag below never renders — no change needed.
     const spikeSet = new Set(spikeIds || []);
     return (commitIds || []).map(id => {
       const s = byId(id);
@@ -4151,6 +4238,26 @@ var qrcode = function() {
     const res = await getResult(teamId, round);
     if (currentScreen.name !== 'team-results' || currentScreen.teamId !== teamId) return;
 
+    // Rank among all teams this round (§5.6: lead with score AND rank, not
+    // just score in isolation). Ties share a rank and are both labeled that
+    // way rather than one arbitrarily edging out the other.
+    let rankLabel = '';
+    try {
+      const teams = await getTeams();
+      if (currentScreen.name !== 'team-results' || currentScreen.teamId !== teamId) return;
+      const allResults = await Promise.all(teams.map(t => getResult(t.id, round)));
+      if (currentScreen.name !== 'team-results' || currentScreen.teamId !== teamId) return;
+      const scored = teams.map((t, i) => ({ id: t.id, score: rowScore(allResults[i]) })).filter(r => r.score > -Infinity);
+      if (scored.length){
+        scored.sort((a,b)=>b.score-a.score);
+        const myScore = rowScore(res);
+        const place = scored.findIndex(r=>r.id===teamId) + 1;
+        const tiedCount = scored.filter(r=>r.score===myScore).length;
+        const ord = n => (n%10===1&&n%100!==11) ? n+'st' : (n%10===2&&n%100!==12) ? n+'nd' : (n%10===3&&n%100!==13) ? n+'rd' : n+'th';
+        if (place > 0) rankLabel = `${tiedCount>1 ? 'tied for ' : ''}${ord(place)} of ${scored.length}`;
+      }
+    } catch (e) { /* rank is a nice-to-have — if it fails, the score alone still renders below */ }
+
     // Without this, a team's screen freezes on this round's result forever —
     // nothing else re-checks room state once we're here, so opening the next
     // round on the facilitator's device never reaches players.
@@ -4200,6 +4307,8 @@ var qrcode = function() {
 
     const shippedRows = res.completed.length
       ? `<div class="si-team-list">${res.completed.map(id => {
+          // SPIKE (disabled): res.spikes is always empty while SPIKE_ENABLED
+          // is false, so this badge never renders — no change needed.
           const spiked = res.spikes.includes(id);
           return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(storyName(id))}</span>${spiked ? '<span class="si-pill taken">🛡</span>' : ''}</div>`;
         }).join('')}</div>`
@@ -4220,7 +4329,8 @@ var qrcode = function() {
       <div class="si-card" style="text-align:center;">
         ${cbLine}
         <p class="si-eyebrow" style="margin-bottom:2px;">${res.isFinal ? 'Final score' : 'Score so far'}</p>
-        <p class="si-mono" style="font-size:2.6rem; font-weight:600; margin:0 0 8px;">${bigScore}</p>
+        <p class="si-mono" style="font-size:2.6rem; font-weight:600; margin:0 0 4px;">${bigScore}</p>
+        ${rankLabel ? `<p style="color:var(--fog); font-size:0.85rem; margin:0 0 8px;">${escapeHtml(rankLabel)}</p>` : ''}
         ${targetPill}
       </div>
       <div class="si-card">
