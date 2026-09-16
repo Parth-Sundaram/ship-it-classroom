@@ -2867,13 +2867,25 @@ var qrcode = function() {
     // crunchNextPenalty is now a PER-STREAK multiplier, not a flat hit — see
     // resolveTeamRound: hangover = crunchNextPenalty * consecutive crunches.
     crunchGain:3, crunchNextPenalty:3, crunchBugPenalty:3, crunchBugThreshold:3,
-    midHi:1, midMax:2, bigHi:2, bigMax:4,
+    // §12 (rev. 4): variance and curveball modifiers raised so that fully
+    // loading a plan to the base 20 capacity reliably eats into 2-4 points of
+    // headroom — the safe commit level is now effectively ~17, not ~20. A
+    // team that reserves nothing is betting the round will land on the good
+    // side of the dice; a team that reserves ~3 capacity is the one the math
+    // actually favors. This is the "Slack" lesson (XP's planned-buffer
+    // practice), not just the crunch one: overcommitting your estimate is
+    // punished by ordinary variance even if you never touch crunch.
+    midHi:2, midMax:3, bigHi:3, bigMax:5,
     // Same-round insurance (§5.3): idle capacity absorbs overruns invisibly via
     // bestCompletion's capacity check — no config needed for that part. These
     // two just gate the small, capped cross-round carry: leave at least
     // slackCarryThreshold capacity unused with zero broken promises this round
     // and the next round starts with slackCarryAmount extra capacity.
-    slackCarryThreshold:6, slackCarryAmount:2,
+    // Threshold dropped 6 → 3 to match the new ~17 safe-commit level: the
+    // same ~3-point reserve that keeps you safe from variance this round is
+    // now exactly what earns the carry-forward reward too, instead of
+    // needing double that to bank anything.
+    slackCarryThreshold:3, slackCarryAmount:2,
   };
   // SPIKE (disabled — reserved for future estimation/spikes scope, per the
   // handoff doc). One switch gates every spike-related effect and UI element
@@ -2894,19 +2906,19 @@ var qrcode = function() {
   const AUTO_PICK_ENABLED = false;
   const CURVEBALLS = {
     none:        { tone:'neutral', desc:'Nothing unusual happened this round — costs played out exactly as planned.' },
-    security:    { tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 2 more capacity than planned. That\'s likely why a big commitment ran over.' },
-    pivot:       { tone:'good',    desc:'Leadership asked for polish: polish stories shipped for double their usual value this round — that works in your favor.' },
-    integration: { tone:'good',    desc:'Shared infrastructure was already in place: \'linked\' stories cost 1 less capacity than planned — that works in your favor.' },
-    turnover:    { tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 2 more capacity than planned. That\'s likely why capacity ran short.' },
+    security:    { tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 3 more capacity than planned. That\'s likely why a big commitment ran over.' },
+    turnover:    { tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 3 more capacity than planned. That\'s likely why capacity ran short.' },
   };
-  const CB_KEYS = ['security','pivot','integration','turnover','none'];
-  // Only one round per game gets a good-or-neutral curveball; every other
-  // round draws a bad one. Randomized fully (§ earlier rev) meant a team
-  // could get lucky two or three rounds running and never feel the cost of
-  // overcommitting — that muddies the lesson. Generated once per game
+  const CB_KEYS = ['security','turnover','none'];
+  // Only one round per game gets a neutral curveball; every other round draws
+  // a bad one. Randomized fully (§ earlier rev) meant a team could get lucky
+  // two or three rounds running and never feel the cost of overcommitting —
+  // that muddies the lesson. §13 (rev. 5) removed the two 'good' curveballs
+  // (pivot, integration) outright — the pool a team can land on this one
+  // round is now just 'none', never a genuine upside. Generated once per game
   // (first call to resolveRound below) and stored on room state, not
   // per-round, so it's fixed for the whole game rather than re-rolled.
-  const GOOD_NEUTRAL_CBS = ['none', 'pivot', 'integration'];
+  const GOOD_NEUTRAL_CBS = ['none'];
   const BAD_CBS = ['security', 'turnover'];
   function generateCurveballSequence(){
     const goodRound = Math.floor(Math.random() * TOTAL_ROUNDS);
@@ -2920,7 +2932,7 @@ var qrcode = function() {
   function byId(id){ return ALL_STORIES.find(s => s.id === id); }
   function d6(){ return 1 + Math.floor(Math.random()*6); }
   function tierOf(e){ return e<=2 ? 'safe' : (e<=5 ? 'mid' : 'big'); }
-  function valueOf(s, cb){ return (cb==='pivot' && s.polish) ? s.val*2 : s.val; }
+  function valueOf(s, cb){ return s.val; }
 
   function workStory(s, { spiked, cb, isHi }){
     // SPIKE (disabled): while SPIKE_ENABLED is false, a story is never treated
@@ -2942,9 +2954,8 @@ var qrcode = function() {
       blowup = (tier==='big' && r===6);
     }
     let cost = base + variance, cbMod = 0;
-    if (cb==='security' && s.est>=6) cbMod += 2;
-    if (cb==='integration' && s.linked) cbMod -= 1;
-    if (cb==='turnover' && isHi) cbMod += 2;
+    if (cb==='security' && s.est>=6) cbMod += 3;
+    if (cb==='turnover' && isHi) cbMod += 3;
     cost += cbMod;
     if (effectiveSpiked) cost += CFG.spikeCost;
     return { cost: Math.max(0,cost), variance, blowup };
@@ -4178,7 +4189,7 @@ var qrcode = function() {
             <p><b>Slack.</b> Capacity you don't commit elsewhere isn't spent on anything — but if a committed story runs over its estimate, that unclaimed capacity absorbs the overrun instead of breaking your commitment. You won't see it happen; you'll only see that nothing broke. Leave enough of it with zero broken promises, and a little carries into next round too.</p>
             ${SPIKE_ENABLED ? `<p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>` : ''}
             <p><b>Crunch.</b> Ticking crunch always grants +${CFG.crunchGain} capacity this round — whether you end up needing it or not — but it always carries a bug risk, and the capacity you lose next round grows the more rounds in a row you crunch. Overtime is a loan against your future, and the interest compounds.</p>
-            <p><b>Curveballs.</b> Each round a random event may shift some costs or values (big stories cost more, polish worth double, and so on). It's revealed when the round resolves.</p>
+            <p><b>Curveballs.</b> Each round a random event may shift some costs (a big story running over, your biggest commitment costing more) — one round in the game is unaffected, every other round something bites. It's revealed when the round resolves.</p>
           </div>
         </details>
         <div class="si-actions">
@@ -4196,12 +4207,6 @@ var qrcode = function() {
         const isSel = local.selected.has(s.id);
         const isSpiked = local.spikes.has(s.id);
         const est = pe(s);
-        // Polish/linked drive curveball effects (pivot doubles polish value,
-        // integration discounts linked cost) but were never shown anywhere —
-        // a player had no way to tell which stories a curveball even applied
-        // to. Small tag here fixes that.
-        const tagText = s.polish ? 'polish' : (s.linked ? 'linked' : null);
-        const tagHtml = tagText ? ` · <span style="text-transform:uppercase; letter-spacing:0.03em; font-size:0.7rem;">${tagText}</span>` : '';
         // SPIKE (disabled): the toggle pill only renders while SPIKE_ENABLED —
         // a picked story just shows "picked" with no spike affordance.
         const right = isSel
@@ -4213,7 +4218,7 @@ var qrcode = function() {
         return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-action="pick" data-story-id="${s.id}">
           <span class="si-team-name" style="flex:1;">
             ${escapeHtml(s.name)}
-            <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · ${est} hour${est===1?'':'s'}${tagHtml}</span>
+            <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · ${est} hour${est===1?'':'s'}</span>
           </span>
           ${right}
         </div>`;
