@@ -41,6 +41,12 @@ export default async function handler(req, res) {
       if (!key) return res.status(400).json({ error: 'key required' });
 
       let value = await redis.get(key);
+      // TEMP DIAGNOSTIC — remove once confirmed. Logs what redis.get() handed
+      // back BEFORE any manual correction, so a Vercel function log will show
+      // "string" if the SDK's auto-deserialization is the thing misbehaving,
+      // or "object" if it's already fine (in which case the bug was likely on
+      // the write side, or elsewhere entirely).
+      console.log('[kv diag]', key, '-> typeof from redis.get():', typeof value);
       // Defensive: if the SDK's own auto-deserialization didn't kick in (or
       // the value was ever written by something that only did a plain
       // string set), this recovers it. If it's already an object (the
