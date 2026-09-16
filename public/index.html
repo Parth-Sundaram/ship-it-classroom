@@ -2770,10 +2770,16 @@ var qrcode = function() {
     capacity:20,
     targets:[13,15],                 // release target (shipped value) per round; length = # rounds
     missPenalty:8,
-    surplusRate:0.8, surplusCap:12,
+    // clearBonus is a flat bonus for clearing target, dwarfing the capped value
+    // below it — this + the min(shipped,target) cap in evaluate() is what makes
+    // clearing a floor instead of a ramp. Placeholder pending the rev.2 retune
+    // (§5.1/§5.7 of the handoff doc) once targets move to 4 rounds.
+    clearBonus:20,
     brokenPenalty:2,
     comboBonus:10, comboIds:['S3','S6','S9'],
     spikeCost:2,
+    // crunchNextPenalty is now a PER-STREAK multiplier, not a flat hit — see
+    // resolveTeamRound: hangover = crunchNextPenalty * consecutive crunches.
     crunchGain:3, crunchNextPenalty:3, crunchBugPenalty:3, crunchBugThreshold:3,
     midHi:1, midMax:2, bigHi:2, bigMax:4,
     enablerDiscount:2, enablerMode:'estimate',
@@ -2908,10 +2914,14 @@ var qrcode = function() {
       const broken = items.length - doneIds.size;
       const shipped = comp.rawVal;
       const hitTarget = shipped >= target;
-      const surplus = hitTarget ? Math.min(CFG.surplusCap, Math.floor((shipped-target)*CFG.surplusRate)) : 0;
       const miss = hitTarget ? 0 : CFG.missPenalty;
-      const score = comp.rawVal - CFG.brokenPenalty*broken + surplus - miss;
-      return { comp, doneIds, broken, shipped, hitTarget, surplus, miss, usedCost:comp.cost, score };
+      // Value counts only up to target — shipping further past it scores nothing
+      // more. Clearing pays a flat bonus instead, so a team that clears by 1 and
+      // a team that clears by 8 score almost the same, and both clearly beat any
+      // miss. This is what makes target a floor, not a gradient to chase.
+      const cappedVal = Math.min(shipped, target);
+      const score = cappedVal + (hitTarget ? CFG.clearBonus : 0) - CFG.brokenPenalty*broken - miss;
+      return { comp, doneIds, broken, shipped, hitTarget, miss, usedCost:comp.cost, score };
     }
     function absorb(items, k){
       const idx = items.map((it,i)=>[i,it.variance]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,k).map(x=>x[0]);
@@ -2926,8 +2936,13 @@ var qrcode = function() {
     let outcome = bestOutcome, spent = bestK;
     const workingUsed = absorb(working, bestK);
 
+    // Crunch is an unconditional trap: ticking it always grants the extra
+    // capacity, always rolls bug risk, and always sets up next round's
+    // hangover — whether or not the team actually needed the boost. Gating it
+    // on "only if you were already going to miss" (as before) made it a free
+    // contingent rescue with no downside; this makes it a real choice.
     let crunched = false, crunchBug = false;
-    if (crunch && (!outcome.hitTarget || outcome.broken>0)){
+    if (crunch){
       crunched = true;
       capacity = baseCap + CFG.crunchGain;
       crunchBug = d6() <= CFG.crunchBugThreshold;
@@ -2942,8 +2957,17 @@ var qrcode = function() {
 
     const roundScore = outcome.score - (crunchBug ? CFG.crunchBugPenalty : 0);
     const brokenIds = working.filter(w=>!outcome.doneIds.has(w.id)).map(w=>w.id);
-    const nextCarry = (crunched && !isFinal) ? -CFG.crunchNextPenalty : 0;
-    const finalCrunchPenalty = (crunched && isFinal) ? CFG.crunchNextPenalty : 0;
+
+    // Compounding hangover: crunchStreak counts consecutive rounds crunched
+    // (reset to 0 the moment a round passes without crunching). The capacity
+    // hit next round scales with it — 1st crunch costs −3, a 2nd in a row
+    // costs −6, a 3rd costs −9 — so a team that keeps reaching for it visibly
+    // spirals, and a team that stops gets a clean reset.
+    const priorStreak = state.crunchStreak || 0;
+    const crunchStreak = crunched ? priorStreak + 1 : 0;
+    const hangover = CFG.crunchNextPenalty * crunchStreak;
+    const nextCarry = (crunched && !isFinal) ? -hangover : 0;
+    const finalCrunchPenalty = (crunched && isFinal) ? hangover : 0;
     const nextTrust = outcome.hitTarget && brokenIds.length===0;
     const cumScore = (state.cumScore||0) + roundScore;
 
@@ -2951,14 +2975,15 @@ var qrcode = function() {
     const endBonus = isFinal ? ((combo?CFG.comboBonus:0) + tokensOut*CFG.tokenEndValue - finalCrunchPenalty) : 0;
     const finalScore = cumScore + endBonus;
 
-    const newState = { completedAll:[...completedAll], carry:nextCarry, trustAvail:nextTrust, tokens:tokensOut, cumScore };
+    const newState = { completedAll:[...completedAll], carry:nextCarry, trustAvail:nextTrust, tokens:tokensOut, cumScore, crunchStreak };
     const log = {
       round: roundIndex+1, cb, target,
       committed: (commitIds||[]).slice(), spikes: [...spikeSet], crunch,
       costs: rolled.map(r=>({ id:r.id, cost:r.cost, blowup:r.blowup, spiked:r.spiked, value:r.value })),
       completed: [...outcome.doneIds], broken: brokenIds, trustDropped,
-      shipped: outcome.shipped, hitTarget: outcome.hitTarget, surplus: outcome.surplus, miss: outcome.miss,
-      crunched, crunchBug, tokensSpent: spent, tokensGained: gained, tokensOut,
+      shipped: outcome.shipped, hitTarget: outcome.hitTarget, miss: outcome.miss,
+      crunched, crunchBug, crunchStreak, nextHangover: (crunched && !isFinal) ? hangover : undefined,
+      tokensSpent: spent, tokensGained: gained, tokensOut,
       roundScore, cumScore,
       isFinal, combo: isFinal?combo:undefined, endBonus: isFinal?endBonus:undefined, finalScore: isFinal?finalScore:undefined,
       capacityUsed: outcome.usedCost, capacity,
@@ -3128,8 +3153,8 @@ var qrcode = function() {
     await sharedSet('team:' + teamId + ':round' + round, data);
   }
 
-  // Persistent cross-round state (completedAll / carry / trust / tokens / cumScore).
-  function freshTeamState() { return { completedAll: [], carry: 0, trustAvail: false, tokens: 0, cumScore: 0 }; }
+  // Persistent cross-round state (completedAll / carry / trust / tokens / cumScore / crunchStreak).
+  function freshTeamState() { return { completedAll: [], carry: 0, trustAvail: false, tokens: 0, cumScore: 0, crunchStreak: 0 }; }
   async function getTeamState(teamId) {
     try { return (await sharedGet('team:' + teamId + ':state')) || freshTeamState(); } catch (e) { return freshTeamState(); }
   }
@@ -3249,7 +3274,7 @@ var qrcode = function() {
       const brokeTxt = res.broken.length ? ` · broke ${res.broken.length}` : '';
       const extras = [
         `shipped ${res.shipped}/${res.target}`,
-        res.hitTarget ? (res.surplus ? `+${res.surplus} surplus` : 'target met') : `missed (−${res.miss})`,
+        res.hitTarget ? 'target met' : `missed (−${res.miss})`,
         res.spikes.length ? `spike ×${res.spikes.length}` : null,
         res.crunched ? (res.crunchBug ? 'crunched (bug!)' : 'crunched') : null,
         res.autoPicked ? 'auto-picked' : null,
@@ -3887,6 +3912,8 @@ var qrcode = function() {
     const carry = st.carry || 0;                 // negative after a crunch last round
     const capacity = CFG.capacity + carry;
     const target = CFG.targets[round - 1];
+    const crunchStreak = st.crunchStreak || 0;    // consecutive rounds crunched so far
+    const nextHangover = CFG.crunchNextPenalty * (crunchStreak + 1); // if ticked this round too
 
     const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false, helpOpen: false };
 
@@ -3918,7 +3945,7 @@ var qrcode = function() {
         <div class="si-card">
           <div class="si-team-list">
             <div class="si-team-row" id="si-crunch-toggle" style="cursor:pointer;">
-              <span class="si-team-name">Crunch <span style="color:var(--fog); font-weight:400; font-size:0.82rem;">— +${CFG.crunchGain} capacity now, but a bug risk &amp; −${CFG.crunchNextPenalty} next round</span></span>
+              <span class="si-team-name">Crunch <span style="color:var(--fog); font-weight:400; font-size:0.82rem;">— +${CFG.crunchGain} capacity now, a bug risk, and −${nextHangover} capacity next round${crunchStreak > 0 ? ' (streak ' + crunchStreak + ')' : ''}. Applies whether or not you end up needing it.</span></span>
               ${local.crunch ? '<span class="si-pill taken">on</span>' : '<span class="si-pill open">off</span>'}
             </div>
           </div>
@@ -3929,7 +3956,7 @@ var qrcode = function() {
             <p><b>Capacity &amp; overruns.</b> You have a capacity budget, and your committed estimates have to fit inside it. But real work is uncertain — bigger stories can overrun their estimate; small ones are safe. If your actual work blows past capacity you can't finish everything you promised, and every broken promise costs points.</p>
             <p><b>Slack.</b> Capacity you leave unused banks slack tokens you can spend in a later round to absorb an overrun. A buffer is insurance against the unexpected.</p>
             <p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>
-            <p><b>Crunch.</b> If you're in trouble, borrow +${CFG.crunchGain} capacity this round — but there's a real chance it ships a bug, and you lose ${CFG.crunchNextPenalty} capacity next round. Overtime is a loan against your future.</p>
+            <p><b>Crunch.</b> Ticking crunch always grants +${CFG.crunchGain} capacity this round — whether you end up needing it or not — but it always carries a bug risk, and the capacity you lose next round grows the more rounds in a row you crunch. Overtime is a loan against your future, and the interest compounds.</p>
             <p><b>Curveballs.</b> Each round a random event may shift some costs or values (big stories cost more, polish worth double, and so on). It's revealed when the round resolves.</p>
           </div>
         </details>
@@ -4172,8 +4199,8 @@ var qrcode = function() {
       ? `<div class="si-notice"><div class="si-notice-title">Auto-picked</div>No commitment came in before time ran out, so a default plan was chosen for you.</div>`
       : (res.timedOut ? `<div class="si-notice"><div class="si-notice-title">Locked in at the buzzer</div>Your in-progress plan was submitted when the timer hit zero.</div>` : '');
     const targetPill = res.hitTarget
-      ? `<span class="si-pill open">shipped ${res.shipped} / ${res.target} ✓${res.surplus ? ' · +' + res.surplus + ' surplus' : ''}</span>`
-      : `<span class="si-pill" style="border-color:var(--ember);color:var(--ember);">shipped ${res.shipped} / ${res.target} · missed −${res.miss}</span>`;
+      ? `<span class="si-pill open">cleared — shipped ${res.shipped} / ${res.target}</span>`
+      : `<span class="si-pill" style="border-color:var(--ember);color:var(--ember);">missed — shipped ${res.shipped} / ${res.target} (−${res.miss})</span>`;
 
     const shippedRows = res.completed.length
       ? `<div class="si-team-list">${res.completed.map(id => {
@@ -4187,6 +4214,7 @@ var qrcode = function() {
       : '';
     const extraBits = [
       res.crunched ? (res.crunchBug ? `Crunched — shipped a bug (−${CFG.crunchBugPenalty})` : 'Crunched for extra capacity') : null,
+      (res.crunched && !res.isFinal && res.nextHangover) ? `Hangover next round: −${res.nextHangover} capacity (streak ${res.crunchStreak})` : null,
       res.tokensGained ? `Banked ${res.tokensGained} slack token${res.tokensGained===1?'':'s'}` : null,
       res.tokensSpent ? `Spent ${res.tokensSpent} slack token${res.tokensSpent===1?'':'s'} to absorb overruns` : null,
       (res.isFinal && res.combo) ? `Checkout combo complete — +${CFG.comboBonus}` : null,
