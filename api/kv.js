@@ -8,6 +8,14 @@ import { Redis } from '@upstash/redis';
 // Works with either credential pair, so it doesn't matter how you provisioned:
 //   - Vercel Marketplace "Upstash" integration  -> KV_REST_API_URL / KV_REST_API_TOKEN
 //   - a standalone Upstash Redis database        -> UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+//
+// JSON handling is done manually here rather than relying on the client's
+// automatic serialize/deserialize: a round submission was observed coming
+// back from GET as a raw JSON string instead of a parsed object (silently
+// producing an empty commitIds downstream, since a string has no .commitIds
+// property). Stringifying explicitly on the way in and parsing explicitly
+// on the way out removes the dependency on that auto behavior entirely, so
+// it doesn't matter whether the SDK's own (de)serialization kicks in or not.
 
 let _redis = null;
 function getRedis() {
@@ -31,7 +39,17 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const key = req.query && req.query.key;
       if (!key) return res.status(400).json({ error: 'key required' });
-      const value = await redis.get(key); // auto-deserializes JSON values
+
+      let value = await redis.get(key);
+      // Defensive: if the SDK's own auto-deserialization didn't kick in (or
+      // the value was ever written by something that only did a plain
+      // string set), this recovers it. If it's already an object (the
+      // normal case once writes go through the explicit stringify below),
+      // this is a no-op.
+      if (typeof value === 'string') {
+        try { value = JSON.parse(value); } catch (e) { /* not JSON — leave as the raw string */ }
+      }
+
       if (value === null || value === undefined) {
         return res.status(404).json({ error: 'not found' });
       }
@@ -45,7 +63,13 @@ export default async function handler(req, res) {
       }
       const { key, value } = body || {};
       if (!key) return res.status(400).json({ error: 'key required' });
-      await redis.set(key, value); // objects/arrays auto-serialized to JSON
+
+      // Explicit stringify before handing off to Redis — the SDK passes
+      // strings through unchanged (no double-encoding), so this becomes the
+      // single, predictable source of serialization instead of relying on
+      // the client to do it under the hood. (JSON.stringify(undefined) is
+      // itself undefined, so that case is already handled with no extra check.)
+      await redis.set(key, JSON.stringify(value));
       return res.status(200).json({ key, value });
     }
 
