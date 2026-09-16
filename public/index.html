@@ -279,6 +279,39 @@ html, body { height: 100%; margin: 0; }
 
 .si-notice .si-notice-title { font-weight: 600; margin-bottom: 4px; }
 
+/* curveball reveal — tone-colored, no cute flavor names (§11.1) */
+.si-curveball {
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.si-curveball .si-curveball-title { font-weight: 600; display: block; margin-bottom: 4px; }
+.si-curveball.tone-bad { border-color: var(--ember); background: var(--ember-soft); }
+.si-curveball.tone-good { border-color: var(--olive); background: var(--olive-soft); }
+.si-curveball.tone-neutral { border-color: var(--rule); background: var(--bone); }
+
+/* broken-promise callout — deliberately the loudest thing on the screen when
+   it applies (§11.2): this is the central consequence the whole game teaches. */
+.si-broken-banner {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  border: 2px solid var(--ember);
+  background: var(--ember-soft);
+  text-align: center;
+  margin-bottom: 16px;
+}
+.si-broken-banner .si-broken-title {
+  font-family: 'Newsreader', serif;
+  font-weight: 600;
+  font-size: 1.3rem;
+  color: var(--ember);
+  margin: 0 0 6px;
+}
+.si-broken-banner .si-broken-detail { font-size: 0.85rem; color: var(--ink); margin: 0; }
+
 /* status row */
 .si-status-row {
   display: flex;
@@ -360,23 +393,23 @@ html, body { height: 100%; margin: 0; }
 }
 .si-dev-reset:hover { opacity: 1; }
 
-/* Big numbers (facilitator timer + committed count). Base size works on a
+/* Big numbers (host timer + committed count). Base size works on a
    phone; projector mode scales them up below. */
 .si-bignum { font-size: 1.8rem; font-weight: 600; }
 
-/* Projector mode — added to #si-view only on the facilitator dashboard, and the
-   layout changes are gated to wide screens so a facilitator on a phone still
+/* Projector mode — added to #si-view only on the host dashboard, and the
+   layout changes are gated to wide screens so a host on a phone still
    gets the plain mobile column. The leaderboard is the hero during results. */
 @media (min-width: 820px) {
   #si-view.si-projector { max-width: 940px; }
   .si-projector .si-header h1 { font-size: 2.9rem; }
   .si-projector .si-bignum { font-size: 3.4rem; }
-  .si-projector #si-fac-results .si-eyebrow { font-size: 1.05rem; }
-  .si-projector #si-fac-results .si-team-name { font-size: 1.5rem; }
-  .si-projector #si-fac-results .si-team-row { padding: 18px 22px; }
-  .si-projector #si-fac-results .si-pill { font-size: 0.95rem; padding: 5px 14px; }
-  .si-projector #si-fac-team-list .si-team-name { font-size: 1.2rem; }
-  .si-projector #si-fac-team-list .si-pill { font-size: 0.82rem; }
+  .si-projector #si-host-results .si-eyebrow { font-size: 1.05rem; }
+  .si-projector #si-host-results .si-team-name { font-size: 1.5rem; }
+  .si-projector #si-host-results .si-team-row { padding: 18px 22px; }
+  .si-projector #si-host-results .si-pill { font-size: 0.95rem; padding: 5px 14px; }
+  .si-projector #si-host-team-list .si-team-name { font-size: 1.2rem; }
+  .si-projector #si-host-team-list .si-pill { font-size: 0.82rem; }
 }
 
 /* Collapsible "How this works" on the commit screen */
@@ -2745,9 +2778,9 @@ var qrcode = function() {
   const DEVICE_ID_KEY = 'device:id';
   const DEVICE_ROLE_KEY = 'device:role';
   const POLL_MS = 2500;
-  const FACILITATOR_PIN = '2358';
-  const TIMER_SECONDS = 180;        // default commit window per round; facilitator can +30s or resolve early
-  const TIMER_EXTEND_SECONDS = 30;  // "+30s" bump on the facilitator dashboard
+  const HOST_PIN = '2358';
+  const TIMER_SECONDS = 180;        // default commit window per round; host can +30s or resolve early
+  const TIMER_EXTEND_SECONDS = 30;  // "+30s" bump on the host dashboard
 
   // ============================================================
   // Ship It — engine, rev. 2 (see the handoff doc for the full design
@@ -2755,88 +2788,80 @@ var qrcode = function() {
   // it earns nothing more), crunch as an unconditional/compounding trap,
   // slack as same-round insurance against overruns, 4 rounds each with its
   // own sprint backlog. Spike is built but disabled — see SPIKE_ENABLED.
-  // Teams submit commit/crunch; the facilitator's device runs
+  // Teams submit commit/crunch; the host's device runs
   // resolveTeamRound() for everyone so dice are single-sourced.
   // ============================================================
   // Sprint model (§5.5): each round is its own sprint with a small, independent
   // backlog — no story carries between rounds, so story IDs are globally unique
   // (round-prefixed) and there is no cross-round completion state to track.
-  // Every round's safe tier (est<=2, no variance roll) deliberately sums to well
-  // under that round's CFG.targets entry, so a team can't clear on zero-risk
-  // stories alone — see shipit-sim.js stats in the handoff doc for the numbers
-  // behind this backlog set.
+  // §11.5: value density climbs with risk tier (safe < mid < big) so bigger,
+  // riskier stories are actually worth choosing, not just flavor text.
   const SPRINTS = [
-    // Round 1 — Storefront basics. maxAchievable(cap 20)=28, safe-tier sum=8.
+    // Round 1 — Storefront basics. Density climbs by tier: safe~1.0, mid~1.3-1.6, big~1.7-1.9.
     [
-      { id:'R1-S1', name:'Product listing page',        val:5, est:3 },
-      { id:'R1-S2', name:'Shopping cart',                val:7, est:5, linked:true },
-      { id:'R1-S3', name:'Checkout flow',                val:8, est:6, linked:true },
-      { id:'R1-S4', name:'Search bar',                   val:4, est:3 },
-      { id:'R1-S5', name:'Order confirmation email',     val:2, est:2, polish:true },
-      { id:'R1-S6', name:'Basic account login',          val:3, est:2 },
-      { id:'R1-S7', name:'Mobile responsive layout',     val:3, est:2, polish:true },
-      { id:'R1-S8', name:'Payment gateway integration',  val:9, est:7, linked:true },
+      { id:'R1-S1', name:'Product listing page',        val:4,  est:3 },
+      { id:'R1-S2', name:'Shopping cart',                val:8,  est:5, linked:true },
+      { id:'R1-S3', name:'Checkout flow',                val:10, est:6, linked:true },
+      { id:'R1-S4', name:'Search bar',                   val:4,  est:3 },
+      { id:'R1-S5', name:'Order confirmation email',     val:2,  est:2, polish:true },
+      { id:'R1-S6', name:'Basic account login',          val:2,  est:2 },
+      { id:'R1-S7', name:'Mobile responsive layout',     val:2,  est:2, polish:true },
+      { id:'R1-S8', name:'Payment gateway integration',  val:13, est:7, linked:true },
     ],
-    // Round 2 — Search & discovery. maxAchievable(cap 20)=28, safe-tier sum=8.
+    // Round 2 — Search & discovery.
     [
-      { id:'R2-S1', name:'Search bar upgrade',           val:5, est:3 },
-      { id:'R2-S2', name:'Filters & sorting',             val:4, est:3 },
-      { id:'R2-S3', name:'Product recommendations',       val:9, est:7 },
-      { id:'R2-S4', name:'Recently viewed',               val:3, est:2, polish:true },
-      { id:'R2-S5', name:'Autocomplete suggestions',      val:3, est:2 },
-      { id:'R2-S6', name:'Category pages',                val:6, est:5, linked:true },
-      { id:'R2-S7', name:'Trending items widget',         val:2, est:1, polish:true },
-      { id:'R2-S8', name:'Personalized homepage',         val:8, est:6, linked:true },
+      { id:'R2-S1', name:'Search bar upgrade',           val:4,  est:3 },
+      { id:'R2-S2', name:'Filters & sorting',             val:4,  est:3 },
+      { id:'R2-S3', name:'Product recommendations',       val:13, est:7 },
+      { id:'R2-S4', name:'Recently viewed',               val:2,  est:2, polish:true },
+      { id:'R2-S5', name:'Autocomplete suggestions',      val:2,  est:2 },
+      { id:'R2-S6', name:'Category pages',                val:8,  est:5, linked:true },
+      { id:'R2-S7', name:'Trending items widget',         val:1,  est:1, polish:true },
+      { id:'R2-S8', name:'Personalized homepage',         val:10, est:6, linked:true },
     ],
-    // Round 3 — Engagement & retention. maxAchievable(cap 20)=25, safe-tier sum=7.
+    // Round 3 — Engagement & retention.
     [
-      { id:'R3-S1', name:'Ratings & reviews',             val:4, est:3 },
-      { id:'R3-S2', name:'Wishlist',                      val:3, est:2 },
-      { id:'R3-S3', name:'Loyalty points program',        val:7, est:6, linked:true },
-      { id:'R3-S4', name:'Push notifications',            val:5, est:4 },
-      { id:'R3-S5', name:'Referral program',              val:6, est:5, linked:true },
-      { id:'R3-S6', name:'Dark mode / theming',           val:2, est:1, polish:true },
-      { id:'R3-S7', name:'Email digest',                  val:2, est:2, polish:true },
-      { id:'R3-S8', name:'Social sharing',                val:8, est:7 },
+      { id:'R3-S1', name:'Ratings & reviews',             val:4,  est:3 },
+      { id:'R3-S2', name:'Wishlist',                      val:2,  est:2 },
+      { id:'R3-S3', name:'Loyalty points program',        val:10, est:6, linked:true },
+      { id:'R3-S4', name:'Push notifications',            val:6,  est:4 },
+      { id:'R3-S5', name:'Referral program',              val:8,  est:5, linked:true },
+      { id:'R3-S6', name:'Dark mode / theming',           val:1,  est:1, polish:true },
+      { id:'R3-S7', name:'Email digest',                  val:2,  est:2, polish:true },
+      { id:'R3-S8', name:'Social sharing',                val:13, est:7 },
     ],
-    // Round 4 — Scale & polish (final round). maxAchievable(cap 20)=27, safe-tier sum=5.
+    // Round 4 — Scale & polish (final round).
     [
-      { id:'R4-S1', name:'Admin dashboard',               val:5, est:4 },
-      { id:'R4-S2', name:'Bulk order tools',              val:6, est:5, linked:true },
-      { id:'R4-S3', name:'Fraud detection',               val:8, est:7 },
-      { id:'R4-S4', name:'One-click reorder',             val:5, est:3, linked:true },
-      { id:'R4-S5', name:'Accessibility pass',            val:3, est:2, polish:true },
-      { id:'R4-S6', name:'Performance tuning',            val:4, est:3 },
-      { id:'R4-S7', name:'Multi-currency support',        val:7, est:6, linked:true },
-      { id:'R4-S8', name:'Seasonal theme pack',           val:2, est:1, polish:true },
+      { id:'R4-S1', name:'Admin dashboard',               val:6,  est:4 },
+      { id:'R4-S2', name:'Bulk order tools',              val:8,  est:5, linked:true },
+      { id:'R4-S3', name:'Fraud detection',               val:13, est:7 },
+      { id:'R4-S4', name:'One-click reorder',             val:4,  est:3, linked:true },
+      { id:'R4-S5', name:'Accessibility pass',            val:2,  est:2, polish:true },
+      { id:'R4-S6', name:'Performance tuning',            val:4,  est:3 },
+      { id:'R4-S7', name:'Multi-currency support',        val:10, est:6, linked:true },
+      { id:'R4-S8', name:'Seasonal theme pack',           val:1,  est:1, polish:true },
     ],
   ];
   const ALL_STORIES = SPRINTS.flat();
+  const TOTAL_ROUNDS = SPRINTS.length; // was CFG.targets.length before §11.6 removed targets
   function backlogForRound(roundIndex){ return SPRINTS[roundIndex] || []; }
   const CFG = {
     capacity:20,
-    // Targets, one per round/backlog (§5.5: 4 rounds, one fresh sprint backlog
-    // each). Set at ~68% of each round's own maxAchievable (best value
-    // obtainable spending full capacity on that round's stories — see SPRINTS
-    // comments for the per-round numbers), per §5.7's guidance that the ratio
-    // which matters is target/maxAchievable, not target/capacity. Confirmed
-    // via shipit-sim.js (item 8, 30000-trial run): at these targets a
-    // deliberate ~25%-buffer strategy wins ~91% of simulated games against a
-    // pack-to-capacity strategy, purely by avoiding broken promises (packing
-    // tight breaks something in ~89% of rounds even though it still usually
-    // clears the number) — see the CHOSEN CONFIG block in shipit-sim.js for
-    // the full comparison and the sweep that led here.
-    targets:[19,19,17,18],
-    missPenalty:8,
-    // clearBonus is a flat bonus for clearing target, dwarfing the capped value
-    // below it — this + the min(shipped,target) cap in evaluate() is what makes
-    // clearing a floor instead of a ramp. 30 sits at ~1.6-1.9x the per-round
-    // targets, matching §5.1's "roughly 1.5-2x target" guidance; confirmed via
-    // the same shipit-sim.js sweep as targets above (win-rate margin for the
-    // buffer strategy was stable across clearBonus 20/26/30/34, so this was
-    // picked from the middle of that range rather than an extreme).
-    clearBonus:30,
-    brokenPenalty:2,
+    // §11.6 (rev. 3): capacity is a soft budget, not a hard gate. There is no
+    // target anymore — no clear bonus, no miss penalty, no value cap. A story
+    // that completes within actual (post-dice) capacity pays full value; a
+    // story that doesn't still pays overrunCredit×value instead of zero, on
+    // top of brokenPenalty. Overreach is a real, felt trade — not blocked in
+    // the UI, not zeroed out if it doesn't land, just genuinely worse than it
+    // would have been if it had fit.
+    overrunCredit:0.3,
+    // Raised from 2 (rev. 2) to 5 specifically so overrunCredit×value −
+    // brokenPenalty stays negative even for the single highest-value story in
+    // any backlog (max 13 after the §11.5 rebalance: 13×0.3−5 = −1.1). That
+    // keeps "commit to something you're certain won't fit" a losing move in
+    // expectation — the intended tension is a calculated risk on a story that
+    // MIGHT complete, not "commit to the whole backlog, everything pays."
+    brokenPenalty:5,
     spikeCost:2,
     // crunchNextPenalty is now a PER-STREAK multiplier, not a flat hit — see
     // resolveTeamRound: hangover = crunchNextPenalty * consecutive crunches.
@@ -2845,9 +2870,8 @@ var qrcode = function() {
     // Same-round insurance (§5.3): idle capacity absorbs overruns invisibly via
     // bestCompletion's capacity check — no config needed for that part. These
     // two just gate the small, capped cross-round carry: leave at least
-    // slackCarryThreshold capacity unused (uncrunched, target still cleared)
+    // slackCarryThreshold capacity unused with zero broken promises this round
     // and the next round starts with slackCarryAmount extra capacity.
-    // Placeholders pending retune.
     slackCarryThreshold:6, slackCarryAmount:2,
   };
   // SPIKE (disabled — reserved for future estimation/spikes scope, per the
@@ -2860,11 +2884,11 @@ var qrcode = function() {
   // no-op safely today since spikeIds/spikes stay empty while this is false).
   const SPIKE_ENABLED = false;
   const CURVEBALLS = {
-    none:        { label:'Calm sprint',      tone:'neutral', desc:'Nothing unusual happened this round — costs played out exactly as planned.' },
-    security:    { label:'Security review',  tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 2 more capacity than planned. That\'s likely why a big commitment ran over.' },
-    pivot:       { label:'Priority pivot',   tone:'good',    desc:'Leadership asked for polish: polish stories shipped for double their usual value this round — that works in your favor.' },
-    integration: { label:'Integration help', tone:'good',    desc:'Shared infrastructure was already in place: \'linked\' stories cost 1 less capacity than planned — that works in your favor.' },
-    turnover:    { label:'Team turnover',    tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 2 more capacity than planned. That\'s likely why capacity ran short.' },
+    none:        { tone:'neutral', desc:'Nothing unusual happened this round — costs played out exactly as planned.' },
+    security:    { tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 2 more capacity than planned. That\'s likely why a big commitment ran over.' },
+    pivot:       { tone:'good',    desc:'Leadership asked for polish: polish stories shipped for double their usual value this round — that works in your favor.' },
+    integration: { tone:'good',    desc:'Shared infrastructure was already in place: \'linked\' stories cost 1 less capacity than planned — that works in your favor.' },
+    turnover:    { tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 2 more capacity than planned. That\'s likely why capacity ran short.' },
   };
   const CB_KEYS = ['security','pivot','integration','turnover','none'];
   function randomCurveball(){ return CB_KEYS[Math.floor(Math.random()*CB_KEYS.length)]; }
@@ -2908,14 +2932,15 @@ var qrcode = function() {
   }
 
   // A legal default commitment for a team that runs out of time with nothing
-  // picked (timeout) or never opens the picker (no-show). Fills toward the
-  // release target by value-per-estimate, prefers lower-risk stories, and
-  // spikes any big-tier story it has to include so the fallback isn't sabotaged
-  // by a blowup. Not a guaranteed win — just legal and not deliberately bad,
-  // which is the whole point of replacing the harsh empty-commit auto-fail.
+  // picked (timeout) or never opens the picker (no-show). §11.6: there's no
+  // target to chase anymore, so this just conservatively fills capacity with
+  // the best available value/estimate stories, preferring lower-risk ones —
+  // a reasonable default a non-present team would want, not a risk-taker
+  // gambling on their behalf. Not a guaranteed best outcome — just legal and
+  // not deliberately bad, which is the whole point of replacing the harsh
+  // empty-commit auto-fail.
   function autoPickCommit(state, roundIndex){
     const cap = CFG.capacity + (state.carry || 0);
-    const target = CFG.targets[roundIndex];
     const ranked = backlogForRound(roundIndex).map(s => {
       const est = s.est;
       const tier = tierOf(est);
@@ -2926,19 +2951,17 @@ var qrcode = function() {
       a.est - b.est                                               // then cheaper
     );
     const commitIds = [], spikeIds = []; // spikeIds stays empty while SPIKE_ENABLED is false
-    let usedEst = 0, plannedVal = 0;
+    let usedEst = 0;
     for (const { s, est, tier } of ranked){
       // SPIKE (disabled): this used to pay CFG.spikeCost to spike every "big"
       // story it had to include, removing its blowup risk so the fallback
       // wasn't sabotaged by bad luck. That protection doesn't exist while
       // spike is disabled, so auto-pick stops paying for it too.
       const addCost = est + (SPIKE_ENABLED && tier === 'big' ? CFG.spikeCost : 0);
-      if (usedEst + addCost > cap) continue;
+      if (usedEst + addCost > cap) continue; // stays within capacity — no deliberate overreach on a team's behalf
       commitIds.push(s.id);
       usedEst += addCost;
-      plannedVal += valueOf(s, null);
       if (SPIKE_ENABLED && tier === 'big') spikeIds.push(s.id);
-      if (plannedVal >= target) break; // enough planned value to clear the release
     }
     return { commitIds, spikeIds };
   }
@@ -2948,8 +2971,7 @@ var qrcode = function() {
   function resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state }){
     const baseCap = CFG.capacity + (state.carry||0);
     let capacity = baseCap;
-    const target = CFG.targets[roundIndex];
-    const isFinal = roundIndex === CFG.targets.length - 1;
+    const isFinal = roundIndex === TOTAL_ROUNDS - 1;
 
     const committed = (commitIds||[]).map(byId).filter(Boolean);
     const spikeSet = new Set(spikeIds||[]);
@@ -2960,20 +2982,22 @@ var qrcode = function() {
       return { id:s.id, cost:w.cost, variance:w.variance, value:valueOf(s,cb), blowup:w.blowup, spiked:spikeSet.has(s.id) };
     });
 
+    // §11.6: capacity is a soft budget, not a hard gate — the picker never
+    // blocks committing past it (a team can overreach on purpose). bestCompletion
+    // still picks the best-value subset that actually fits and finishes
+    // (full value, no penalty); anything left over "breaks" — but instead of
+    // contributing nothing, it still pays CFG.overrunCredit×value, on top of
+    // the flat CFG.brokenPenalty. Overreaching is a real, felt trade, not a
+    // wall you can't reach past and not a total loss when it doesn't pay off.
     function evaluate(items, cap){
       const comp = bestCompletion(items, cap);
       const doneIds = new Set(comp.ids);
-      const broken = items.length - doneIds.size;
+      const brokenItems = items.filter(it => !doneIds.has(it.id));
+      const brokenValue = brokenItems.reduce((a,it)=>a+it.value,0);
+      const creditedBrokenValue = brokenValue * CFG.overrunCredit;
       const shipped = comp.rawVal;
-      const hitTarget = shipped >= target;
-      const miss = hitTarget ? 0 : CFG.missPenalty;
-      // Value counts only up to target — shipping further past it scores nothing
-      // more. Clearing pays a flat bonus instead, so a team that clears by 1 and
-      // a team that clears by 8 score almost the same, and both clearly beat any
-      // miss. This is what makes target a floor, not a gradient to chase.
-      const cappedVal = Math.min(shipped, target);
-      const score = cappedVal + (hitTarget ? CFG.clearBonus : 0) - CFG.brokenPenalty*broken - miss;
-      return { comp, doneIds, broken, shipped, hitTarget, miss, usedCost:comp.cost, score };
+      const score = shipped + creditedBrokenValue - CFG.brokenPenalty*brokenItems.length;
+      return { comp, doneIds, broken: brokenItems.length, shipped, creditedBrokenValue, usedCost:comp.cost, score };
     }
 
     // Same-round insurance (§5.3): this is deliberately just evaluate() against
@@ -3024,32 +3048,34 @@ var qrcode = function() {
     const hangover = CFG.crunchNextPenalty * crunchStreak;
 
     // Small cross-round slack carry (§5.3): leave enough capacity unused this
-    // round (uncrunched, target still cleared) and next round starts with a
-    // little extra. Deliberately small and capped — the headline payoff of
-    // slack is "didn't lose N," never "gained N"; this just makes the buffer
-    // feel slightly tangible across rounds, the way crunch's hangover already
-    // carries a cost across rounds.
+    // round with zero broken promises (there's no "target" left to clear —
+    // §11.6 — so "cleared cleanly" now means nothing broke) and next round
+    // starts with a little extra. Deliberately small and capped — the headline
+    // payoff of slack is "didn't lose N," never "gained N"; this just makes the
+    // buffer feel slightly tangible across rounds, the way crunch's hangover
+    // already carries a cost across rounds.
     const unused = Math.max(0, capacity - outcome.usedCost);
-    const idleCarryEarned = (!crunched && outcome.hitTarget && unused >= CFG.slackCarryThreshold)
+    const idleCarryEarned = (!crunched && outcome.broken===0 && unused >= CFG.slackCarryThreshold)
       ? CFG.slackCarryAmount : 0;
 
     const nextCarry = isFinal ? 0 : (crunched ? -hangover : idleCarryEarned);
     const finalCrunchPenalty = (crunched && isFinal) ? hangover : 0;
     const cumScore = (state.cumScore||0) + roundScore;
 
-    // combo/tokens are gone (§5.4) so the only thing left that can still touch
-    // the final round's headline score is a crunch taken on that last round —
-    // there's no round 5 to carry its hangover into, so it's charged here.
+    // combo/tokens/target are gone (§5.4, §11.6) so the only thing left that
+    // can still touch the final round's headline score is a crunch taken on
+    // that last round — there's no round 5 to carry its hangover into, so
+    // it's charged here.
     const endBonus = isFinal ? -finalCrunchPenalty : 0;
     const finalScore = cumScore + endBonus;
 
     const newState = { carry:nextCarry, cumScore, crunchStreak };
     const log = {
-      round: roundIndex+1, cb, target,
+      round: roundIndex+1, cb,
       committed: (commitIds||[]).slice(), spikes: [...spikeSet], crunch,
       costs: working.map(r=>({ id:r.id, cost:r.cost, blowup:r.blowup, spiked:r.spiked, value:r.value })),
       completed: [...outcome.doneIds], broken: brokenIds,
-      shipped: outcome.shipped, hitTarget: outcome.hitTarget, miss: outcome.miss,
+      shipped: outcome.shipped, creditedBrokenValue: outcome.creditedBrokenValue,
       crunched, crunchBug, crunchStreak, nextHangover: (crunched && !isFinal) ? hangover : undefined,
       slackSaved, idleCarryEarned: (idleCarryEarned && !isFinal) ? idleCarryEarned : undefined,
       roundScore, cumScore,
@@ -3058,7 +3084,6 @@ var qrcode = function() {
     };
     return { newState, log };
   }
-
 
   let deviceId = null;
   let pollTimer = null;
@@ -3097,8 +3122,8 @@ var qrcode = function() {
   async function sharedGet(key) {
     // cache: 'no-store' + a cache-busting param: without this, a GET moments
     // after another device's POST can come back stale (browser or edge cache),
-    // which is exactly the shape of "team sees its own submission, facilitator
-    // resolves and sees nothing" — the facilitator's read raced a cached response.
+    // which is exactly the shape of "team sees its own submission, host
+    // resolves and sees nothing" — the host's read raced a cached response.
     const res = await fetch('/api/kv?key=' + encodeURIComponent(key) + '&_=' + Date.now(), { cache: 'no-store' });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('kv get failed: ' + res.status);
@@ -3235,13 +3260,13 @@ var qrcode = function() {
   }
   async function setTeamState(teamId, st) { await sharedSet('team:' + teamId + ':state', st); }
 
-  // Per-round resolved result (what team + facilitator screens read back).
+  // Per-round resolved result (what team + host screens read back).
   async function getResult(teamId, round) {
     try { return await sharedGet('team:' + teamId + ':result' + round); } catch (e) { return null; }
   }
   async function setResult(teamId, round, data) { await sharedSet('team:' + teamId + ':result' + round, data); }
 
-  // Facilitator's device runs the engine for everyone (single-sourced dice).
+  // Host's device runs the engine for everyone (single-sourced dice).
   // One curveball is locked for the whole round; non-submitters resolve as an
   // empty commit (tagged autoFailed) so they're visibly distinct. Idempotent-ish:
   // only resolves while phase is COMMITTING.
@@ -3313,7 +3338,7 @@ var qrcode = function() {
     return state;
   }
 
-  // Push the shared deadline out (facilitator "+30s"). No-op unless committing.
+  // Push the shared deadline out (host "+30s"). No-op unless committing.
   async function extendDeadline(seconds) {
     const state = await getRoomState();
     if (!state || state.phase !== 'COMMITTING') return state;
@@ -3323,13 +3348,38 @@ var qrcode = function() {
   }
 
   function storyName(id){ const s = byId(id); return s ? s.name : id; }
+
+  // §11.1: curveball reveal, tone-colored, no cute flavor names — just what
+  // happened and (via CURVEBALLS' desc text) why it's connected to whatever
+  // ran over or under this round.
+  function curveballBannerHtml(cbKey){
+    const cb = CURVEBALLS[cbKey];
+    if (!cb) return '';
+    const title = cb.tone === 'bad' ? 'Something went wrong this round'
+      : (cb.tone === 'good' ? 'Something went right this round' : 'A calm round');
+    return `<div class="si-curveball tone-${cb.tone}"><span class="si-curveball-title">${escapeHtml(title)}</span>${escapeHtml(cb.desc)}</div>`;
+  }
+
+  // §11.2: broken promises are the central "this is what overreaching costs
+  // you" consequence — this needs to be the loudest thing on the screen, not
+  // a footnote. Stories still earn partial credit (CFG.overrunCredit) even
+  // when broken (§11.6), so this explains the deduction, not a total loss.
+  function brokenPromiseBannerHtml(brokenIds){
+    if (!brokenIds || !brokenIds.length) return '';
+    const n = brokenIds.length;
+    const names = brokenIds.map(storyName).join(', ');
+    return `<div class="si-broken-banner">
+      <p class="si-broken-title">⚠ You broke ${n} promise${n===1?'':'s'}!</p>
+      <p class="si-broken-detail">${escapeHtml(names)} didn't fit this round's capacity — docked ${CFG.brokenPenalty*n} point${CFG.brokenPenalty*n===1?'':'s'} total (${CFG.brokenPenalty} each). Still earned partial credit for the work in progress.</p>
+    </div>`;
+  }
   // score a result row uses for ranking: finalScore on the last round, else running cumScore
   function rowScore(res){
     if (!res) return -Infinity;
     return (res.isFinal && typeof res.finalScore === 'number') ? res.finalScore : res.cumScore;
   }
 
-  async function buildFacilitatorResultsHtml(round, teams) {
+  async function buildHostResultsHtml(round, teams) {
     const results = await Promise.all(teams.map(t => getResult(t.id, round)));
     const rows = teams.map((t, i) => ({ team: t, res: results[i] }));
     const ranked = [...rows].sort((a, b) => rowScore(b.res) - rowScore(a.res));
@@ -3343,10 +3393,12 @@ var qrcode = function() {
         : (res && res.autoPicked
             ? `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'} · auto</span>`
             : `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'}</span>`);
-      const missTag = (res && !res.autoFailed && !res.hitTarget) ? ' <span class="si-pill" style="border-color:var(--ember);color:var(--ember);">missed target</span>' : '';
+      // §11.2: broken promises get a loud, unmissable red pill on the leaderboard row.
+      const n = (res && !res.autoFailed) ? res.broken.length : 0;
+      const brokeTag = n ? ` <span class="si-pill" style="border-color:var(--ember);color:var(--ember);font-weight:700;">⚠ broke ${n}</span>` : '';
       return `<div class="si-team-row si-team-row-fac">
         <span class="si-team-name">${i + 1}. ${escapeHtml(r.team.name)}</span>
-        <span class="si-fac-row-actions">${missTag}${tag}</span>
+        <span class="si-fac-row-actions">${brokeTag}${tag}</span>
       </div>`;
     }).join('');
 
@@ -3358,10 +3410,10 @@ var qrcode = function() {
         return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit · ${res.roundScore} pts</span></div>`;
       }
       const shipped = res.completed.map(storyName).join(', ') || 'nothing shipped';
-      const brokeTxt = res.broken.length ? ` · broke ${res.broken.length}` : '';
+      const brokeTxt = res.broken.length ? ` · ⚠ broke ${res.broken.length} (${res.broken.map(storyName).join(', ')})` : '';
       const extras = [
-        `shipped ${res.shipped}/${res.target}`,
-        res.hitTarget ? 'target met' : `missed (−${res.miss})`,
+        `shipped value ${res.shipped}`,
+        res.creditedBrokenValue ? `+${res.creditedBrokenValue.toFixed(1)} partial credit` : null,
         // SPIKE (disabled): res.spikes is always empty while SPIKE_ENABLED is
         // false, so this line never renders anything — left as-is, no change needed.
         res.spikes.length ? `spike ×${res.spikes.length}` : null,
@@ -3375,11 +3427,11 @@ var qrcode = function() {
           <span class="si-team-name">${escapeHtml(team.name)}</span>
           <span class="si-pill taken si-mono">${scoreLabel}</span>
         </div>
-        <p style="color:var(--fog); font-size:0.78rem; margin:2px 0 10px;">${escapeHtml(shipped)}${brokeTxt}<br>${escapeHtml(extras)}</p>`;
+        <p style="color:var(--fog); font-size:0.78rem; margin:2px 0 10px;">${escapeHtml(shipped)}<br>${escapeHtml(extras)}${res.broken.length ? `<br><span style="color:var(--ember); font-weight:600;">${escapeHtml(brokeTxt.replace(/^ · /, ''))}</span>` : ''}</p>`;
     }).join('');
 
     const cbKey = (results.find(r => r && r.cb) || {}).cb;
-    const cbLine = cbKey ? `<p style="color:var(--fog); font-size:0.82rem; margin:0 0 12px;">Curveball: <b>${CURVEBALLS[cbKey].label}</b> — ${CURVEBALLS[cbKey].desc}</p>` : '';
+    const cbLine = cbKey ? curveballBannerHtml(cbKey) : '';
 
     return `
       <div class="si-card">
@@ -3400,7 +3452,7 @@ var qrcode = function() {
   // Note: only clears round1 for now — extend this list if/when round 2+
   // submissions exist.
   async function endGame(fullWipe, teams) {
-    const rounds = CFG.targets.length;
+    const rounds = TOTAL_ROUNDS;
     await Promise.all(teams.flatMap(t => {
       const keys = ['team:' + t.id + ':claim', 'team:' + t.id + ':state'];
       for (let r = 1; r <= rounds; r++) {
@@ -3466,13 +3518,13 @@ var qrcode = function() {
     document.getElementById('si-join-team').onclick = renderTeamPicker;
   }
 
-  function renderFacilitatorPinGate(errorMsg) {
+  function renderHostPinGate(errorMsg) {
     stopPolling();
-    currentScreen = { name: 'facilitator-pin' };
+    currentScreen = { name: 'host-pin' };
     view.classList.remove('si-projector');
     view.innerHTML = `
       <div class="si-header">
-        <p class="si-eyebrow">Facilitator</p>
+        <p class="si-eyebrow">Host</p>
         <h1>Enter the room PIN</h1>
       </div>
       <div class="si-card">
@@ -3491,28 +3543,27 @@ var qrcode = function() {
   }
 
   async function checkPin(value) {
-    if (value !== FACILITATOR_PIN) {
-      renderFacilitatorPinGate('Wrong PIN — try again.');
+    if (value !== HOST_PIN) {
+      renderHostPinGate('Wrong PIN — try again.');
       return;
     }
-    await joinAsFacilitator();
+    await joinAsHost();
   }
 
-  async function joinAsFacilitator() {
+  async function joinAsHost() {
     let state = await getRoomState();
     if (!state) {
       state = { phase: 'LOBBY', opened: false };
       await setRoomState(state);
     }
-    await setCachedRole({ role: 'facilitator', pinPassed: true });
-    renderFacilitatorDashboard();
+    await setCachedRole({ role: 'host', pinPassed: true });
+    renderHostDashboard();
   }
 
-  // ---- Facilitator dashboard (roster setup + start room + open round 1) ----
+  // ---- Host dashboard (roster setup + start room + open round 1) ----
+  // (TOTAL_ROUNDS is declared once, near SPRINTS, above.)
 
-  const TOTAL_ROUNDS = CFG.targets.length;
-
-  function facilitatorActionHtml(state, teams) {
+  function hostActionHtml(state, teams) {
     if (!state.opened) {
       return `<button class="si-btn si-btn-primary" id="si-start-room" ${teams.length ? '' : 'disabled'}>Start room — open for sign-in</button>`;
     }
@@ -3530,7 +3581,7 @@ var qrcode = function() {
       <button class="si-btn si-btn-primary" id="si-open-round1" ${teams.length ? '' : 'disabled'}>Open Round 1 — start committing</button>`;
   }
 
-  function facilitatorHeadline(state) {
+  function hostHeadline(state) {
     const round = state.round || 1;
     const isFinal = round >= TOTAL_ROUNDS;
     if (state.phase === 'COMMITTING') return `Round ${round} of ${TOTAL_ROUNDS} — committing`;
@@ -3539,8 +3590,8 @@ var qrcode = function() {
     return 'Setting up the room';
   }
 
-  async function renderFacilitatorDashboard() {
-    currentScreen = { name: 'facilitator' };
+  async function renderHostDashboard() {
+    currentScreen = { name: 'host' };
     view.classList.add('si-projector');
     const state = (await getRoomState()) || { phase: 'LOBBY', opened: false };
     const teams = await getTeams();
@@ -3548,8 +3599,8 @@ var qrcode = function() {
     view.innerHTML = `
       <div class="si-status-row"><span class="si-status-dot"></span> live · polling every ${POLL_MS / 1000}s</div>
       <div class="si-header">
-        <p class="si-eyebrow">Facilitator</p>
-        <h1>${facilitatorHeadline(state)}</h1>
+        <p class="si-eyebrow">Host</p>
+        <h1>${hostHeadline(state)}</h1>
       </div>
 
       ${state.phase === 'COMMITTING' ? `
@@ -3557,11 +3608,11 @@ var qrcode = function() {
         <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
           <div>
             <p class="si-eyebrow" style="margin:0 0 2px;">Time left</p>
-            <p class="si-mono si-bignum" id="si-fac-timer" style="margin:0; line-height:1;">${formatClock((state.deadline || 0) - Date.now())}</p>
+            <p class="si-mono si-bignum" id="si-host-timer" style="margin:0; line-height:1;">${formatClock((state.deadline || 0) - Date.now())}</p>
           </div>
           <div style="text-align:right;">
             <p class="si-eyebrow" style="margin:0 0 2px;">Committed</p>
-            <p class="si-mono si-bignum" id="si-fac-submitted" style="margin:0; line-height:1;">0 / ${teams.length}</p>
+            <p class="si-mono si-bignum" id="si-host-submitted" style="margin:0; line-height:1;">0 / ${teams.length}</p>
           </div>
         </div>
         <div class="si-actions" style="margin-top:14px;">
@@ -3587,13 +3638,13 @@ var qrcode = function() {
 
       <div class="si-card">
         <p class="si-eyebrow" style="margin-bottom:12px;">Roster — <span class="si-mono">${teams.length}</span> team${teams.length === 1 ? '' : 's'}</p>
-        <div class="si-team-list" id="si-fac-team-list"></div>
+        <div class="si-team-list" id="si-host-team-list"></div>
       </div>
 
-      ${state.phase === 'RESOLVED' ? '<div id="si-fac-results"></div>' : ''}
+      ${state.phase === 'RESOLVED' ? '<div id="si-host-results"></div>' : ''}
 
       <div class="si-actions">
-        ${facilitatorActionHtml(state, teams)}
+        ${hostActionHtml(state, teams)}
         <button class="si-btn si-btn-ghost" id="si-end-game">End game</button>
       </div>
 
@@ -3604,8 +3655,8 @@ var qrcode = function() {
 
     document.getElementById('si-back').onclick = renderLanding;
 
-    // Join link points at the plain room URL — no ?role=facilitator — so
-    // scanning it never exposes the facilitator entry to students. Only wired
+    // Join link points at the plain room URL — no ?role=host — so
+    // scanning it never exposes the host entry to students. Only wired
     // pre-game, when the join + add-team cards are actually rendered.
     const joinUrl = location.origin + location.pathname;
     const joinUrlEl = document.getElementById('si-join-url');
@@ -3647,7 +3698,7 @@ var qrcode = function() {
     if (startBtn) {
       startBtn.onclick = async () => {
         await openRoom();
-        renderFacilitatorDashboard();
+        renderHostDashboard();
       };
     }
 
@@ -3655,7 +3706,7 @@ var qrcode = function() {
     if (openRoundBtn) {
       openRoundBtn.onclick = async () => {
         await startCommitRound(1);
-        renderFacilitatorDashboard();
+        renderHostDashboard();
       };
     }
 
@@ -3665,7 +3716,7 @@ var qrcode = function() {
         resolveBtn.disabled = true;
         resolveBtn.textContent = 'Resolving…';
         await resolveRound(state.round || 1, teams);
-        renderFacilitatorDashboard();
+        renderHostDashboard();
       };
     }
 
@@ -3673,7 +3724,7 @@ var qrcode = function() {
     if (nextRoundBtn) {
       nextRoundBtn.onclick = async () => {
         await startNextRound(teams);
-        renderFacilitatorDashboard();
+        renderHostDashboard();
       };
     }
 
@@ -3684,21 +3735,21 @@ var qrcode = function() {
         if (!proceed) return;
         const fullWipe = confirm('Also clear the team roster?\n\nOK = wipe everything, ready for a new class.\nCancel = keep the same teams, just reset progress for a rematch.');
         await endGame(fullWipe, teams);
-        renderFacilitatorDashboard();
+        renderHostDashboard();
       };
     }
 
-    await refreshFacilitatorTeamList(teams);
+    await refreshHostTeamList(teams);
 
     if (state.phase === 'RESOLVED') {
-      const resultsEl = document.getElementById('si-fac-results');
-      if (resultsEl) resultsEl.innerHTML = await buildFacilitatorResultsHtml(state.round || 1, teams);
+      const resultsEl = document.getElementById('si-host-results');
+      if (resultsEl) resultsEl.innerHTML = await buildHostResultsHtml(state.round || 1, teams);
     }
 
     startPolling(async () => {
-      if (currentScreen.name !== 'facilitator') return;
+      if (currentScreen.name !== 'host') return;
       const t = await getTeams();
-      await refreshFacilitatorTeamList(t);
+      await refreshHostTeamList(t);
     });
 
     if (state.phase === 'COMMITTING') {
@@ -3710,8 +3761,8 @@ var qrcode = function() {
         addBtn.disabled = false;
       };
       startTicker(() => {
-        if (currentScreen.name !== 'facilitator') { stopTicker(); return; }
-        const el = document.getElementById('si-fac-timer');
+        if (currentScreen.name !== 'host') { stopTicker(); return; }
+        const el = document.getElementById('si-host-timer');
         if (!el) return;
         const remaining = facDeadline - Date.now();
         el.textContent = formatClock(remaining);
@@ -3729,16 +3780,16 @@ var qrcode = function() {
     input.value = '';
     input.disabled = false;
     input.focus();
-    renderFacilitatorDashboard();
+    renderHostDashboard();
   }
 
   // During COMMITTING the roster shows who has submitted this round (and updates
-  // the #si-fac-submitted count) instead of sign-in claim status, so the
-  // facilitator can see when it's safe to resolve. Reads room state itself so
+  // the #si-host-submitted count) instead of sign-in claim status, so the
+  // host can see when it's safe to resolve. Reads room state itself so
   // every caller (poll, rename, add) stays correct without threading args.
-  async function refreshFacilitatorTeamList(teams) {
-    const list = document.getElementById('si-fac-team-list');
-    const countEl = document.getElementById('si-fac-submitted');
+  async function refreshHostTeamList(teams) {
+    const list = document.getElementById('si-host-team-list');
+    const countEl = document.getElementById('si-host-submitted');
     if (!list) return;
 
     if (!teams.length) {
@@ -3803,13 +3854,13 @@ var qrcode = function() {
         await renameTeam(team.id, val);
       }
       const t = await getTeams();
-      await refreshFacilitatorTeamList(t);
+      await refreshHostTeamList(t);
     };
     const cancel = async () => {
       if (settled) return;
       settled = true;
       const t = await getTeams();
-      await refreshFacilitatorTeamList(t);
+      await refreshHostTeamList(t);
     };
 
     input.addEventListener('keydown', e => {
@@ -3826,7 +3877,7 @@ var qrcode = function() {
       if (!ok) return;
     }
     await removeTeam(team.id);
-    renderFacilitatorDashboard();
+    renderHostDashboard();
   }
 
   // ---- Team join flow ----
@@ -3842,7 +3893,7 @@ var qrcode = function() {
       view.innerHTML = `
         <div class="si-header">
           <p class="si-eyebrow">Join as My Team</p>
-          <h1>Waiting for the facilitator to open the room.</h1>
+          <h1>Waiting for the host to open the room.</h1>
         </div>
         <div class="si-footer-note">
           <button class="si-back-link" id="si-back">← back</button>
@@ -3940,7 +3991,19 @@ var qrcode = function() {
     const state = await getRoomState();
 
     if (!state || state.phase === 'LOBBY' || !state.opened) {
-      renderTeamWaiting(teamId, teamName, 'Waiting for the facilitator to start Round 1.');
+      renderTeamWaiting(teamId, teamName, 'Waiting for the host to start Round 1.');
+      return;
+    }
+
+    // §11.4: a device can still be carrying a cached teamId for a team that no
+    // longer exists — e.g. the host did a full-wipe reset and reopened with a
+    // brand new roster. Without this check the device would sail past the
+    // !opened gate above (the room IS open again) and try to operate as a
+    // team that isn't there anymore. Bounce back to the landing screen instead.
+    const teams = await getTeams();
+    if (!teams.some(t => t.id === teamId)) {
+      await clearCachedRole();
+      renderLanding();
       return;
     }
 
@@ -3997,12 +4060,15 @@ var qrcode = function() {
     let deadline = (room && room.deadline) || (Date.now() + TIMER_SECONDS * 1000);
     const avail = backlogForRound(round - 1); // round is 1-indexed here, backlogForRound wants 0-indexed
     const carry = st.carry || 0;                 // negative after a crunch last round, positive after a big-slack round
-    const capacity = CFG.capacity + carry;
-    const target = CFG.targets[round - 1];
     const crunchStreak = st.crunchStreak || 0;    // consecutive rounds crunched so far
     const nextHangover = CFG.crunchNextPenalty * (crunchStreak + 1); // if ticked this round too
 
     const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false, helpOpen: false };
+
+    // §11.6: capacity is a soft budget now, not a hard ceiling the picker
+    // enforces — but the number shown should still reflect crunch's boost
+    // live, so the "over budget" warning is accurate the moment it's ticked.
+    function effectiveCapacity(){ return CFG.capacity + carry + (local.crunch ? CFG.crunchGain : 0); }
 
     const pe = s => s.est;
     function used() {
@@ -4016,20 +4082,23 @@ var qrcode = function() {
 
     function draw() {
       const t = used();
+      const capacity = effectiveCapacity();
+      const over = t > capacity;
       view.innerHTML = `
         <div class="si-status-row"><span class="si-status-dot"></span> Time left: <span class="si-mono" id="si-timer" style="font-weight:600; color:${(deadline - Date.now()) <= 30000 ? 'var(--ember)' : 'var(--ink)'};">${formatClock(deadline - Date.now())}</span></div>
         <div class="si-header">
-          <p class="si-eyebrow">Round ${round} of ${CFG.targets.length} — commit</p>
+          <p class="si-eyebrow">Round ${round} of ${TOTAL_ROUNDS} — commit</p>
           <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
         </div>
         <div class="si-card">
           <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-            <p class="si-eyebrow" style="margin:0;">Capacity used</p>
-            <p class="si-mono" style="margin:0; font-weight:600;">${t} / ${capacity}</p>
+            <p class="si-eyebrow" style="margin:0;">Capacity committed</p>
+            <p class="si-mono" style="margin:0; font-weight:600; color:${over ? 'var(--ember)' : 'var(--ink)'};">${t} / ${capacity}</p>
           </div>
           ${carry < 0 ? `<p style="color:var(--ember); font-size:0.8rem; margin:0 0 10px;">Crunch hangover from last round: −${-carry} capacity (normally ${CFG.capacity}).</p>` : ''}
           ${carry > 0 ? `<p style="color:var(--olive); font-size:0.8rem; margin:0 0 10px;">Carried in from leaving capacity unused last round: +${carry} capacity (normally ${CFG.capacity}).</p>` : ''}
-          <p style="color:var(--fog); font-size:0.8rem; margin:0 0 14px;">Ship at least <b class="si-mono">${target}</b> value this round to hit the release. Tap a story to commit it; tap again to drop it.</p>
+          ${over ? `<p style="color:var(--ember); font-size:0.8rem; margin:0 0 10px;">Over budget by ${t - capacity}. Nothing stops you — but whatever doesn't fit when the round resolves breaks a promise: partial credit instead of full, plus a penalty.</p>` : ''}
+          <p style="color:var(--fog); font-size:0.8rem; margin:0 0 14px;">Commit to whatever you want — capacity is a budget, not a wall. Tap a story to commit it; tap again to drop it.</p>
           <div class="si-team-list" id="si-backlog-list"></div>
         </div>
         <div class="si-card">
@@ -4043,9 +4112,8 @@ var qrcode = function() {
         <details class="si-help" id="si-help" ${local.helpOpen ? 'open' : ''}>
           <summary>How this works</summary>
           <div class="si-help-body">
-            <p><b>Capacity &amp; overruns.</b> You have a capacity budget, and your committed estimates have to fit inside it. But real work is uncertain — bigger stories can overrun their estimate; small ones are safe. If your actual work blows past capacity you can't finish everything you promised, and every broken promise costs points.</p>
-            <p><b>Target &amp; scoring.</b> Ship at least the round's target and you clear it — a flat bonus, the same whether you clear by a little or by a lot. Shipping past target doesn't add extra points. Miss it and you lose points instead. Clearing is the floor to aim for, not a number to maximize.</p>
-            <p><b>Slack.</b> Capacity you don't commit elsewhere isn't spent on anything — but if a committed story runs over its estimate, that unclaimed capacity absorbs the overrun instead of breaking your commitment. You won't see it happen; you'll only see that nothing broke. Leave enough of it and clear the target, and a little carries into next round too.</p>
+            <p><b>Capacity &amp; overdraw.</b> Capacity is a budget, not a hard limit — you can commit past it if you want the extra value badly enough. But real work is uncertain, and whatever doesn't fit once the dice are rolled breaks a promise: it still earns partial credit, not zero, but a lot less than if it had fit, plus a flat penalty per broken promise. Overreach on purpose if you think it's worth the risk — nothing in the app will stop you.</p>
+            <p><b>Slack.</b> Capacity you don't commit elsewhere isn't spent on anything — but if a committed story runs over its estimate, that unclaimed capacity absorbs the overrun instead of breaking your commitment. You won't see it happen; you'll only see that nothing broke. Leave enough of it with zero broken promises, and a little carries into next round too.</p>
             ${SPIKE_ENABLED ? `<p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>` : ''}
             <p><b>Crunch.</b> Ticking crunch always grants +${CFG.crunchGain} capacity this round — whether you end up needing it or not — but it always carries a bug risk, and the capacity you lose next round grows the more rounds in a row you crunch. Overtime is a loan against your future, and the interest compounds.</p>
             <p><b>Curveballs.</b> Each round a random event may shift some costs or values (big stories cost more, polish worth double, and so on). It's revealed when the round resolves.</p>
@@ -4065,6 +4133,7 @@ var qrcode = function() {
       list.innerHTML = avail.map(s => {
         const isSel = local.selected.has(s.id);
         const isSpiked = local.spikes.has(s.id);
+        // §11.6: this is a warning, not a gate — picking past budget is allowed.
         const wouldExceed = !isSel && (t + pe(s) > capacity);
         const est = pe(s);
         // SPIKE (disabled): the toggle pill only renders while SPIKE_ENABLED —
@@ -4074,7 +4143,7 @@ var qrcode = function() {
                ${SPIKE_ENABLED ? `<span class="si-pill${isSpiked ? ' taken' : ''}" data-action="spike" data-story-id="${s.id}" style="cursor:pointer;">${isSpiked ? '🛡 safe' : 'spike +' + CFG.spikeCost}</span>` : ''}
                <span class="si-pill taken">picked</span>
              </span>`
-          : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`;
+          : `<span class="si-pill${wouldExceed ? '' : ' open'}" style="${wouldExceed ? 'border-color:var(--ember);color:var(--ember);' : ''}">${wouldExceed ? 'over budget' : 'pick'}</span>`;
         return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-action="pick" data-story-id="${s.id}">
           <span class="si-team-name" style="flex:1;">
             ${escapeHtml(s.name)}
@@ -4087,12 +4156,8 @@ var qrcode = function() {
       list.querySelectorAll('[data-action="pick"]').forEach(el => {
         el.onclick = () => {
           const id = el.getAttribute('data-story-id');
-          const s = byId(id);
           if (local.selected.has(id)) { local.selected.delete(id); local.spikes.delete(id); }
-          else {
-            if (used() + pe(s) > capacity) return;
-            local.selected.add(id);
-          }
+          else { local.selected.add(id); } // §11.6: no capacity gate — overreaching is allowed, not blocked
           draw();
         };
       });
@@ -4104,10 +4169,7 @@ var qrcode = function() {
           e.stopPropagation();
           const id = el.getAttribute('data-story-id');
           if (local.spikes.has(id)) local.spikes.delete(id);
-          else {
-            if (used() + CFG.spikeCost > capacity) return;
-            local.spikes.add(id);
-          }
+          else { local.spikes.add(id); } // §11.6: no capacity gate on spike either
           draw();
         };
       });
@@ -4166,7 +4228,7 @@ var qrcode = function() {
       const r = await getRoomState();
       if (!r) return;
       if (r.phase !== 'COMMITTING' || (r.round || 1) !== round) {
-        await renderTeamEntry(teamId, teamName); // facilitator resolved / advanced early
+        await renderTeamEntry(teamId, teamName); // host resolved / advanced early
         return;
       }
       if (r.deadline && r.deadline !== deadline) deadline = r.deadline; // picked up a +30s extension
@@ -4204,19 +4266,25 @@ var qrcode = function() {
     try { const r0 = await getRoomState(); if (r0) deadline = r0.deadline || null; } catch (e) {}
     if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) return;
 
+    // §11.4: this used to only re-check on RESOLVED or a round-number change,
+    // so a host reset (room goes back to LOBBY, opened:false) was invisible
+    // here — the screen just sat frozen showing a submission for a room that
+    // no longer existed, with no back link to escape either. Broadened to
+    // catch !opened / non-COMMITTING / any round mismatch, matching how
+    // every other team screen already detects a reset.
     startPolling(async () => {
       if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) return;
       const s = await getRoomState();
       if (!s) return;
       if (s.deadline) deadline = s.deadline;
-      if (s.phase === 'RESOLVED' || (s.phase === 'COMMITTING' && (s.round || 1) !== submission.round)) {
+      if (!s.opened || s.phase !== 'COMMITTING' || (s.round || 1) !== submission.round) {
         await renderTeamEntry(teamId, teamName);
       }
     });
 
     const lockedNote = submission.autoPicked
       ? 'Time ran out before you picked — a default plan was locked in for you.'
-      : (submission.timedOut ? 'Locked in when the timer hit zero.' : 'Locked until the facilitator resolves the round.');
+      : (submission.timedOut ? 'Locked in when the timer hit zero.' : 'Locked until the host resolves the round.');
     const rows = commitRowsHtml(submission.commitIds, submission.spikeIds);
     view.innerHTML = `
       <div class="si-status-row"><span class="si-status-dot"></span> Time left: <span class="si-mono" id="si-timer" style="font-weight:600;">—</span></div>
@@ -4225,16 +4293,18 @@ var qrcode = function() {
         <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
       </div>
       <div class="si-card">
-        <p class="si-eyebrow" style="margin-bottom:12px;">✓ committed — waiting on the facilitator</p>
+        <p class="si-eyebrow" style="margin-bottom:12px;">✓ committed — waiting on the host</p>
         ${(submission.commitIds && submission.commitIds.length)
           ? `<div class="si-team-list">${rows}</div>`
           : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">You committed to nothing this round.</p>`}
         ${submission.crunch ? `<p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">Crunch: on.</p>` : ''}
       </div>
       <div class="si-footer-note">
-        <p style="color:var(--fog); font-size:0.8rem; margin:0;">${lockedNote}</p>
+        <p style="color:var(--fog); font-size:0.8rem; margin:0 0 10px;">${lockedNote}</p>
+        <button class="si-back-link" id="si-back">← not my team, go back</button>
       </div>
     `;
+    document.getElementById('si-back').onclick = renderTeamPicker;
 
     startTicker(() => {
       if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) { stopTicker(); return; }
@@ -4276,7 +4346,7 @@ var qrcode = function() {
 
     // Without this, a team's screen freezes on this round's result forever —
     // nothing else re-checks room state once we're here, so opening the next
-    // round on the facilitator's device never reaches players.
+    // round on the host's device never reaches players.
     function watchForRoundChange() {
       startPolling(async () => {
         if (currentScreen.name !== 'team-results' || currentScreen.teamId !== teamId) return;
@@ -4300,15 +4370,14 @@ var qrcode = function() {
       wire(); watchForRoundChange(); return;
     }
 
-    const cb = CURVEBALLS[res.cb];
-    const cbLine = cb ? `<p style="color:var(--fog); font-size:0.82rem; margin:0 0 14px;">Curveball: <b>${cb.label}</b> — ${cb.desc}</p>` : '';
+    const cbLine = res.cb ? curveballBannerHtml(res.cb) : '';
 
     if (res.autoFailed) {
       view.innerHTML = header + `
         <div class="si-card">
           ${cbLine}
           <p class="si-eyebrow" style="margin-bottom:8px;">No commitment on record</p>
-          <p style="color:var(--fog); font-size:0.9rem; margin:0;">You didn't submit before the round was resolved — missed the release (−${CFG.missPenalty}).</p>
+          <p style="color:var(--fog); font-size:0.9rem; margin:0;">You didn't submit before the round was resolved, and there wasn't enough capacity left to pick anything for you — nothing shipped, zero points this round.</p>
         </div>` + back;
       wire(); watchForRoundChange(); return;
     }
@@ -4317,9 +4386,10 @@ var qrcode = function() {
     const autoNote = res.autoPicked
       ? `<div class="si-notice"><div class="si-notice-title">Auto-picked</div>No commitment came in before time ran out, so a default plan was chosen for you.</div>`
       : (res.timedOut ? `<div class="si-notice"><div class="si-notice-title">Locked in at the buzzer</div>Your in-progress plan was submitted when the timer hit zero.</div>` : '');
-    const targetPill = res.hitTarget
-      ? `<span class="si-pill open">cleared — shipped ${res.shipped} / ${res.target}</span>`
-      : `<span class="si-pill" style="border-color:var(--ember);color:var(--ember);">missed — shipped ${res.shipped} / ${res.target} (−${res.miss})</span>`;
+    // §11.6: no target left to clear/miss — just the shipped value itself.
+    const shippedPill = `<span class="si-pill open">shipped value: ${res.shipped}</span>`;
+    // §11.2: broken promises are the loud, central consequence now — own banner.
+    const brokenBanner = brokenPromiseBannerHtml(res.broken);
 
     const shippedRows = res.completed.length
       ? `<div class="si-team-list">${res.completed.map(id => {
@@ -4330,10 +4400,8 @@ var qrcode = function() {
         }).join('')}</div>`
       : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">Nothing shipped.</p>`;
 
-    const brokeLine = res.broken.length
-      ? `<p style="color:var(--ember); font-size:0.82rem; margin:12px 0 0;">Broke ${res.broken.length} promise${res.broken.length===1?'':'s'}: ${escapeHtml(res.broken.map(storyName).join(', '))} (−${CFG.brokenPenalty} each)</p>`
-      : '';
     const extraBits = [
+      res.creditedBrokenValue ? `Partial credit for broken work: +${res.creditedBrokenValue.toFixed(1)}` : null,
       res.crunched ? (res.crunchBug ? `Crunched — shipped a bug (−${CFG.crunchBugPenalty})` : 'Crunched for extra capacity') : null,
       (res.crunched && !res.isFinal && res.nextHangover) ? `Hangover next round: −${res.nextHangover} capacity (streak ${res.crunchStreak})` : null,
       res.slackSaved ? `Idle capacity saved you — absorbed ${res.slackSaved.absorbed} of overrun that would've broken a promise` : null,
@@ -4347,12 +4415,12 @@ var qrcode = function() {
         <p class="si-eyebrow" style="margin-bottom:2px;">${res.isFinal ? 'Final score' : 'Score so far'}</p>
         <p class="si-mono" style="font-size:2.6rem; font-weight:600; margin:0 0 4px;">${bigScore}</p>
         ${rankLabel ? `<p style="color:var(--fog); font-size:0.85rem; margin:0 0 8px;">${escapeHtml(rankLabel)}</p>` : ''}
-        ${targetPill}
+        ${shippedPill}
       </div>
+      ${brokenBanner}
       <div class="si-card">
         <p class="si-eyebrow" style="margin-bottom:12px;">Shipped this round</p>
         ${shippedRows}
-        ${brokeLine}
         ${extraLine}
       </div>` + back;
     wire();
@@ -4371,20 +4439,20 @@ var qrcode = function() {
   (async function boot() {
     await getDeviceId();
     const params = new URLSearchParams(window.location.search);
-    const wantsFacilitator = params.get('role') === 'facilitator';
+    const wantsHost = params.get('role') === 'host';
     const cached = await getCachedRole();
 
-    if (wantsFacilitator) {
-      if (cached && cached.role === 'facilitator' && cached.pinPassed) {
-        renderFacilitatorDashboard();
+    if (wantsHost) {
+      if (cached && cached.role === 'host' && cached.pinPassed) {
+        renderHostDashboard();
       } else {
-        renderFacilitatorPinGate();
+        renderHostPinGate();
       }
       return;
     }
 
-    if (cached && cached.role === 'facilitator' && cached.pinPassed) {
-      renderFacilitatorDashboard();
+    if (cached && cached.role === 'host' && cached.pinPassed) {
+      renderHostDashboard();
     } else if (cached && cached.role === 'team') {
       renderTeamEntry(cached.teamId, cached.teamName);
     } else {
