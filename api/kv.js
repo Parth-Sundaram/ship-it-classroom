@@ -47,6 +47,16 @@ export default async function handler(req, res) {
       // or "object" if it's already fine (in which case the bug was likely on
       // the write side, or elsewhere entirely).
       console.log('[kv diag]', key, '-> typeof from redis.get():', typeof value);
+      // TEMP DIAGNOSTIC — typeof alone wasn't enough to catch this (both
+      // round1 and result1 came back as proper objects, yet the round still
+      // shipped nothing), so this logs the actual content for the two key
+      // shapes that matter for "nothing shipped": a round submission's
+      // commitIds, and a result's shipped/completed values.
+      if (/:round\d+$/.test(key)) {
+        console.log('[kv diag] round submission content', key, JSON.stringify(value));
+      } else if (/:result\d+$/.test(key)) {
+        console.log('[kv diag] result content', key, JSON.stringify(value && { committed: value.committed, completed: value.completed, shipped: value.shipped, autoPicked: value.autoPicked, autoFailed: value.autoFailed }));
+      }
       // Defensive: if the SDK's own auto-deserialization didn't kick in (or
       // the value was ever written by something that only did a plain
       // string set), this recovers it. If it's already an object (the
@@ -69,6 +79,13 @@ export default async function handler(req, res) {
       }
       const { key, value } = body || {};
       if (!key) return res.status(400).json({ error: 'key required' });
+
+      // TEMP DIAGNOSTIC — logs exactly what a round submission contains at
+      // the moment it's written, so it can be compared against what GET
+      // reads back for the same key moments later.
+      if (/:round\d+$/.test(key)) {
+        console.log('[kv diag] round submission WRITE', key, JSON.stringify(value));
+      }
 
       // Explicit stringify before handing off to Redis — the SDK passes
       // strings through unchanged (no double-encoding), so this becomes the
