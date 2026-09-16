@@ -2860,11 +2860,11 @@ var qrcode = function() {
   // no-op safely today since spikeIds/spikes stay empty while this is false).
   const SPIKE_ENABLED = false;
   const CURVEBALLS = {
-    none:        { label:'Calm sprint',     desc:'No curveball this round.' },
-    security:    { label:'Security review',  desc:'Big stories (est 6+) cost +2 — extra hardening.' },
-    pivot:       { label:'Priority pivot',   desc:'Polish stories are worth double value this round.' },
-    integration: { label:'Integration help', desc:'Linked stories cost −1 — the infra came together.' },
-    turnover:    { label:'Team turnover',    desc:'Your single biggest story costs +2 — someone left.' },
+    none:        { label:'Calm sprint',      tone:'neutral', desc:'Nothing unusual happened this round — costs played out exactly as planned.' },
+    security:    { label:'Security review',  tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 2 more capacity than planned. That\'s likely why a big commitment ran over.' },
+    pivot:       { label:'Priority pivot',   tone:'good',    desc:'Leadership asked for polish: polish stories shipped for double their usual value this round — that works in your favor.' },
+    integration: { label:'Integration help', tone:'good',    desc:'Shared infrastructure was already in place: \'linked\' stories cost 1 less capacity than planned — that works in your favor.' },
+    turnover:    { label:'Team turnover',    tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 2 more capacity than planned. That\'s likely why capacity ran short.' },
   };
   const CB_KEYS = ['security','pivot','integration','turnover','none'];
   function randomCurveball(){ return CB_KEYS[Math.floor(Math.random()*CB_KEYS.length)]; }
