@@ -2900,7 +2900,22 @@ var qrcode = function() {
     turnover:    { tone:'bad',     desc:'Someone left mid-sprint: your single biggest committed story cost 2 more capacity than planned. That\'s likely why capacity ran short.' },
   };
   const CB_KEYS = ['security','pivot','integration','turnover','none'];
-  function randomCurveball(){ return CB_KEYS[Math.floor(Math.random()*CB_KEYS.length)]; }
+  // Only one round per game gets a good-or-neutral curveball; every other
+  // round draws a bad one. Randomized fully (§ earlier rev) meant a team
+  // could get lucky two or three rounds running and never feel the cost of
+  // overcommitting — that muddies the lesson. Generated once per game
+  // (first call to resolveRound below) and stored on room state, not
+  // per-round, so it's fixed for the whole game rather than re-rolled.
+  const GOOD_NEUTRAL_CBS = ['none', 'pivot', 'integration'];
+  const BAD_CBS = ['security', 'turnover'];
+  function generateCurveballSequence(){
+    const goodRound = Math.floor(Math.random() * TOTAL_ROUNDS);
+    return Array.from({ length: TOTAL_ROUNDS }, (_, i) =>
+      i === goodRound
+        ? GOOD_NEUTRAL_CBS[Math.floor(Math.random() * GOOD_NEUTRAL_CBS.length)]
+        : BAD_CBS[Math.floor(Math.random() * BAD_CBS.length)]
+    );
+  }
 
   function byId(id){ return ALL_STORIES.find(s => s.id === id); }
   function d6(){ return 1 + Math.floor(Math.random()*6); }
@@ -2915,7 +2930,12 @@ var qrcode = function() {
     const tier = tierOf(s.est);
     let base = s.est;
     let variance = 0, blowup = false;
-    if (!effectiveSpiked && tier!=='safe'){
+    // cb!=='none' guard: the 'none' curveball's own copy promises "costs
+    // played out exactly as planned" — that has to actually be true, or a
+    // team can land on 20/20 planned, draw "nothing unusual happened," and
+    // still eat a broken-promise penalty from a dice roll they were told
+    // didn't apply this round. Every other curveball still rolls variance.
+    if (!effectiveSpiked && tier!=='safe' && cb!=='none'){
       const r = d6();
       if (tier==='mid') variance = r<=3?0:(r<=5?CFG.midHi:CFG.midMax);
       else              variance = r<=3?0:(r<=5?CFG.bigHi:CFG.bigMax);
@@ -3283,7 +3303,8 @@ var qrcode = function() {
     const roomState = (await getRoomState()) || { phase: 'COMMITTING', opened: true, round };
     if (roomState.phase !== 'COMMITTING') return roomState; // already resolved
     const roundIndex = round - 1;
-    const cb = randomCurveball();
+    if (!roomState.cbSequence) roomState.cbSequence = generateCurveballSequence();
+    const cb = roomState.cbSequence[roundIndex];
 
     // Retry a null submission once before treating it as "didn't submit" — a
     // single stale/dropped read here silently turns a real commit into an
