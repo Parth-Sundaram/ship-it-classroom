@@ -2749,7 +2749,7 @@ var qrcode = function() {
     surplusRate:0.8, surplusCap:12,
     brokenPenalty:2,
     comboBonus:10, comboIds:['S3','S6','S9'],
-    spikeCost:1,
+    spikeCost:2,
     crunchGain:3, crunchNextPenalty:3, crunchBugPenalty:3, crunchBugThreshold:3,
     midHi:1, midMax:2, bigHi:2, bigMax:4,
     enablerDiscount:2, enablerMode:'estimate',
@@ -3860,7 +3860,8 @@ var qrcode = function() {
     let deadline = (room && room.deadline) || (Date.now() + TIMER_SECONDS * 1000);
     const s1Done = new Set(st.completedAll || []).has('S1');
     const avail = availableStories(st.completedAll);
-    const capacity = CFG.capacity;
+    const carry = st.carry || 0;                 // negative after a crunch last round
+    const capacity = CFG.capacity + carry;
     const target = CFG.targets[round - 1];
 
     const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false };
@@ -3886,6 +3887,7 @@ var qrcode = function() {
             <p class="si-eyebrow" style="margin:0;">Capacity used</p>
             <p class="si-mono" style="margin:0; font-weight:600;">${t} / ${capacity}</p>
           </div>
+          ${carry < 0 ? `<p style="color:var(--ember); font-size:0.8rem; margin:0 0 10px;">Crunch hangover from last round: −${-carry} capacity (normally ${CFG.capacity}).</p>` : ''}
           <p style="color:var(--fog); font-size:0.8rem; margin:0 0 14px;">Ship at least <b class="si-mono">${target}</b> value this round to hit the release. Tap a story to commit it; tap again to drop it.</p>
           <div class="si-team-list" id="si-backlog-list"></div>
         </div>
