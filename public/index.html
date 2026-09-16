@@ -3095,7 +3095,11 @@ var qrcode = function() {
   // ---------- Shared storage — backed by /api/kv (Vercel KV) ----------
 
   async function sharedGet(key) {
-    const res = await fetch('/api/kv?key=' + encodeURIComponent(key));
+    // cache: 'no-store' + a cache-busting param: without this, a GET moments
+    // after another device's POST can come back stale (browser or edge cache),
+    // which is exactly the shape of "team sees its own submission, facilitator
+    // resolves and sees nothing" — the facilitator's read raced a cached response.
+    const res = await fetch('/api/kv?key=' + encodeURIComponent(key) + '&_=' + Date.now(), { cache: 'no-store' });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('kv get failed: ' + res.status);
     const data = await res.json();
@@ -3247,8 +3251,20 @@ var qrcode = function() {
     const roundIndex = round - 1;
     const cb = randomCurveball();
 
+    // Retry a null submission once before treating it as "didn't submit" — a
+    // single stale/dropped read here silently turns a real commit into an
+    // auto-pick (or, before the sharedGet fix above, into an empty one), which
+    // is the exact shape of "team sees their own submission, resolve shows
+    // nothing shipped." Cheap insurance against one flaky read.
+    async function getRoundSubmissionRetried(teamId) {
+      const first = await getRoundSubmission(teamId, round);
+      if (first) return first;
+      await new Promise(r => setTimeout(r, 400));
+      return getRoundSubmission(teamId, round);
+    }
+
     const [subs, states] = await Promise.all([
-      Promise.all(teams.map(t => getRoundSubmission(t.id, round))),
+      Promise.all(teams.map(t => getRoundSubmissionRetried(t.id))),
       Promise.all(teams.map(t => getTeamState(t.id))),
     ]);
 
@@ -4059,8 +4075,8 @@ var qrcode = function() {
                <span class="si-pill taken">picked</span>
              </span>`
           : `<span class="si-pill open">${wouldExceed ? 'no room' : 'pick'}</span>`;
-        return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-story-id="${s.id}">
-          <span class="si-team-name" data-action="pick" data-story-id="${s.id}" style="cursor:pointer; flex:1;">
+        return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-action="pick" data-story-id="${s.id}">
+          <span class="si-team-name" style="flex:1;">
             ${escapeHtml(s.name)}
             <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · est ${est}</span>
           </span>
