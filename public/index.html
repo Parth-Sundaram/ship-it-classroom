@@ -378,6 +378,30 @@ html, body { height: 100%; margin: 0; }
   .si-projector #si-fac-team-list .si-team-name { font-size: 1.2rem; }
   .si-projector #si-fac-team-list .si-pill { font-size: 0.82rem; }
 }
+
+/* Collapsible "How this works" on the commit screen */
+.si-help {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  padding: 0 16px;
+  margin-top: 12px;
+}
+.si-help summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--ink);
+  list-style: none;
+}
+.si-help summary::-webkit-details-marker { display: none; }
+.si-help summary::before { content: '▸ '; color: var(--fog); }
+.si-help[open] summary::before { content: '▾ '; }
+.si-help-body { padding-bottom: 14px; }
+.si-help-body p { margin: 0 0 10px; font-size: 0.83rem; color: var(--fog); line-height: 1.5; }
+.si-help-body p:last-child { margin-bottom: 0; }
+.si-help-body b { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -3864,7 +3888,7 @@ var qrcode = function() {
     const capacity = CFG.capacity + carry;
     const target = CFG.targets[round - 1];
 
-    const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false };
+    const local = { selected: new Set(), spikes: new Set(), crunch: false, submitting: false, helpOpen: false };
 
     const pe = s => planEst(s, s1Done);
     function used() {
@@ -3899,6 +3923,16 @@ var qrcode = function() {
             </div>
           </div>
         </div>
+        <details class="si-help" id="si-help" ${local.helpOpen ? 'open' : ''}>
+          <summary>How this works</summary>
+          <div class="si-help-body">
+            <p><b>Capacity &amp; overruns.</b> You have a capacity budget, and your committed estimates have to fit inside it. But real work is uncertain — bigger stories can overrun their estimate; small ones are safe. If your actual work blows past capacity you can't finish everything you promised, and every broken promise costs points.</p>
+            <p><b>Slack.</b> Capacity you leave unused banks slack tokens you can spend in a later round to absorb an overrun. A buffer is insurance against the unexpected.</p>
+            <p><b>Spike (costs ${CFG.spikeCost}).</b> Pay ${CFG.spikeCost} capacity to remove a story's uncertainty — it then costs exactly its estimate, no overrun. You're buying down risk on work you're unsure about.</p>
+            <p><b>Crunch.</b> If you're in trouble, borrow +${CFG.crunchGain} capacity this round — but there's a real chance it ships a bug, and you lose ${CFG.crunchNextPenalty} capacity next round. Overtime is a loan against your future.</p>
+            <p><b>Curveballs.</b> Each round a random event may shift some costs or values (big stories cost more, polish worth double, and so on). It's revealed when the round resolves.</p>
+          </div>
+        </details>
         <div class="si-actions">
           <button class="si-btn si-btn-primary" id="si-submit-commit" ${local.submitting ? 'disabled' : ''}>
             ${local.submitting ? 'Submitting…' : (local.selected.size ? 'Submit commitment' : 'Submit with nothing')}
@@ -3957,6 +3991,8 @@ var qrcode = function() {
       });
 
       document.getElementById('si-crunch-toggle').onclick = () => { local.crunch = !local.crunch; draw(); };
+      const helpEl = document.getElementById('si-help');
+      if (helpEl) helpEl.addEventListener('toggle', () => { local.helpOpen = helpEl.open; });
       document.getElementById('si-submit-commit').onclick = () => submit();
       document.getElementById('si-back').onclick = renderTeamPicker;
     }
