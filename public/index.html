@@ -2854,14 +2854,15 @@ var qrcode = function() {
     // top of brokenPenalty. Overreach is a real, felt trade — not blocked in
     // the UI, not zeroed out if it doesn't land, just genuinely worse than it
     // would have been if it had fit.
-    overrunCredit:0.3,
-    // Raised from 2 (rev. 2) to 5 specifically so overrunCredit×value −
-    // brokenPenalty stays negative even for the single highest-value story in
-    // any backlog (max 13 after the §11.5 rebalance: 13×0.3−5 = −1.1). That
-    // keeps "commit to something you're certain won't fit" a losing move in
-    // expectation — the intended tension is a calculated risk on a story that
-    // MIGHT complete, not "commit to the whole backlog, everything pays."
-    brokenPenalty:5,
+    overrunCredit:0.15,
+    // Penalty for overrunning capacity raised further: less partial credit
+    // for broken work (0.3 → 0.15) and a bigger flat penalty per broken
+    // story (5 → 10), so overrun×value − brokenPenalty is more negative even
+    // for the highest-value story in any backlog (max 13 after the §11.5
+    // rebalance: 13×0.15−10 = −8.05, vs. −1.1 before). Overreaching now stings
+    // noticeably harder — "commit to something you're certain won't fit" is a
+    // clearly losing move, not just a marginally negative one.
+    brokenPenalty:10,
     spikeCost:2,
     // crunchNextPenalty is now a PER-STREAK multiplier, not a flat hit — see
     // resolveTeamRound: hangover = crunchNextPenalty * consecutive crunches.
@@ -2883,6 +2884,14 @@ var qrcode = function() {
   // the spike tags on the submitted/result/leaderboard screens (those already
   // no-op safely today since spikeIds/spikes stay empty while this is false).
   const SPIKE_ENABLED = false;
+  // Auto-pick (disabled): when a team times out with nothing selected, or
+  // never opens the picker at all, this used to drop in a legal default
+  // commitment (autoPickCommit below) rather than let them ship nothing.
+  // Turned off — a team that runs out of time or never submits now just
+  // gets an empty commitment (0 shipped this round), same as before that
+  // fallback existed. autoPickCommit is left intact and unused so this can
+  // be flipped back on later.
+  const AUTO_PICK_ENABLED = false;
   const CURVEBALLS = {
     none:        { tone:'neutral', desc:'Nothing unusual happened this round — costs played out exactly as planned.' },
     security:    { tone:'bad',     desc:'A compliance check ate into the schedule: every big story (estimate 6 or higher) cost 2 more capacity than planned. That\'s likely why a big commitment ran over.' },
@@ -3302,7 +3311,7 @@ var qrcode = function() {
         crunch     = !!sub.crunch;
         autoPicked = !!sub.autoPicked;   // team timed out with nothing picked; the client auto-picked for them
         timedOut   = !!sub.timedOut;     // team submitted at the buzzer
-      } else {
+      } else if (AUTO_PICK_ENABLED) {
         // No submission at all (never opened the picker / disconnected) — auto-pick
         // a legal plan rather than the old empty-commit auto-fail.
         const auto = autoPickCommit(states[i], roundIndex);
@@ -3311,6 +3320,13 @@ var qrcode = function() {
         crunch     = false;
         autoPicked = commitIds.length > 0;
         autoFailed = commitIds.length === 0; // nothing left to auto-pick (degenerate)
+      } else {
+        // No submission at all, and auto-pick is off — resolves as an empty
+        // commit, same as the pre-auto-pick behavior.
+        commitIds  = [];
+        spikeIds   = [];
+        crunch     = false;
+        autoFailed = true;
       }
       const { newState, log } = resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state: states[i] });
       log.autoPicked = autoPicked;
@@ -4235,18 +4251,20 @@ var qrcode = function() {
       }
     }
 
-    // Timer hit zero: lock in whatever's picked. If nothing's picked, drop in a
-    // legal auto-pick so the team takes a real (if unchosen) result instead of
-    // eating the release miss.
+    // Timer hit zero: lock in whatever's picked. If nothing's picked and
+    // auto-pick is on, drop in a legal default so the team takes a real (if
+    // unchosen) result; with auto-pick off, they just submit empty-handed.
     function onTimeout() {
       if (local.submitting) return;
       if (local.selected.size > 0) {
         submit({ timedOut: true });
-      } else {
+      } else if (AUTO_PICK_ENABLED) {
         const auto = autoPickCommit(st, round - 1);
         local.selected = new Set(auto.commitIds);
         local.spikes = new Set(auto.spikeIds);
         submit({ timedOut: true, autoPicked: local.selected.size > 0 });
+      } else {
+        submit({ timedOut: true });
       }
     }
 
