@@ -3355,9 +3355,12 @@ var qrcode = function() {
   function curveballBannerHtml(cbKey){
     const cb = CURVEBALLS[cbKey];
     if (!cb) return '';
-    const title = cb.tone === 'bad' ? 'Something went wrong this round'
-      : (cb.tone === 'good' ? 'Something went right this round' : 'A calm round');
-    return `<div class="si-curveball tone-${cb.tone}"><span class="si-curveball-title">${escapeHtml(title)}</span>${escapeHtml(cb.desc)}</div>`;
+    // Deliberately neutral, same label regardless of tone (color still varies).
+    // This is one factor that applied to everyone this round — not a verdict on
+    // any one team's outcome. A team can still break a promise on a "good"
+    // curveball round; that's ordinary variance on a tight commit, unrelated to
+    // this. "Something went right/wrong this round" implied otherwise.
+    return `<div class="si-curveball tone-${cb.tone}"><span class="si-curveball-title">Update:</span>${escapeHtml(cb.desc)}</div>`;
   }
 
   // §11.2: broken promises are the central "this is what overreaching costs
@@ -3373,10 +3376,14 @@ var qrcode = function() {
       <p class="si-broken-detail">${escapeHtml(names)} didn't fit this round's capacity — docked ${CFG.brokenPenalty*n} point${CFG.brokenPenalty*n===1?'':'s'} total (${CFG.brokenPenalty} each). Still earned partial credit for the work in progress.</p>
     </div>`;
   }
-  // score a result row uses for ranking: finalScore on the last round, else running cumScore
+  // score a result row uses for ranking: finalScore on the last round, else running cumScore.
+  // Rounded to a whole number — overrunCredit (§11.6) makes the underlying math
+  // fractional (and float-imprecise, e.g. 27.2000000000000003), but nobody
+  // needs to see that; round once here so display and ranking agree.
   function rowScore(res){
     if (!res) return -Infinity;
-    return (res.isFinal && typeof res.finalScore === 'number') ? res.finalScore : res.cumScore;
+    const raw = (res.isFinal && typeof res.finalScore === 'number') ? res.finalScore : res.cumScore;
+    return Math.round(raw);
   }
 
   async function buildHostResultsHtml(round, teams) {
@@ -3407,13 +3414,13 @@ var qrcode = function() {
         return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">no record</span></div>`;
       }
       if (res.autoFailed) {
-        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit · ${res.roundScore} pts</span></div>`;
+        return `<div class="si-team-row si-team-row-fac"><span class="si-team-name">${escapeHtml(team.name)}</span><span class="si-pill">didn't submit · ${Math.round(res.roundScore)} pts</span></div>`;
       }
       const shipped = res.completed.map(storyName).join(', ') || 'nothing shipped';
       const brokeTxt = res.broken.length ? ` · ⚠ broke ${res.broken.length} (${res.broken.map(storyName).join(', ')})` : '';
       const extras = [
         `shipped value ${res.shipped}`,
-        res.creditedBrokenValue ? `+${res.creditedBrokenValue.toFixed(1)} partial credit` : null,
+        res.creditedBrokenValue ? `+${Math.round(res.creditedBrokenValue)} partial credit` : null,
         // SPIKE (disabled): res.spikes is always empty while SPIKE_ENABLED is
         // false, so this line never renders anything — left as-is, no change needed.
         res.spikes.length ? `spike ×${res.spikes.length}` : null,
@@ -3422,7 +3429,7 @@ var qrcode = function() {
         res.slackSaved ? 'slack saved it' : null,
       ].filter(Boolean).join(' · ');
       const scoreLabel = (res.isFinal && typeof res.finalScore==='number')
-        ? `${res.finalScore} final` : `${res.cumScore} pts`;
+        ? `${Math.round(res.finalScore)} final` : `${Math.round(res.cumScore)} pts`;
       return `<div class="si-team-row si-team-row-fac">
           <span class="si-team-name">${escapeHtml(team.name)}</span>
           <span class="si-pill taken si-mono">${scoreLabel}</span>
@@ -3988,6 +3995,24 @@ var qrcode = function() {
   async function renderTeamEntry(teamId, teamName) {
     stopPolling();
     view.classList.remove('si-projector');
+
+    // A reset (endGame) always deletes every team's claim, whether or not the
+    // host chose a full roster wipe — but it can't touch this device's cached
+    // role in localStorage, so without this check a device that was "team a"
+    // just keeps confidently showing "You're playing as a" / waiting for the
+    // room to reopen, even though its claim on "a" no longer exists and
+    // anyone could take that slot first. This also catches the same-team,
+    // different-device "take over" flow — if another device claims this team
+    // out from under this one, this device gets logged out here too, instead
+    // of silently going on thinking it's still in control.
+    const myDeviceId = await getDeviceId();
+    const claim = await getClaim(teamId);
+    if (!claim || claim.deviceId !== myDeviceId) {
+      await clearCachedRole();
+      renderLanding();
+      return;
+    }
+
     const state = await getRoomState();
 
     if (!state || state.phase === 'LOBBY' || !state.opened) {
@@ -3997,9 +4022,10 @@ var qrcode = function() {
 
     // §11.4: a device can still be carrying a cached teamId for a team that no
     // longer exists — e.g. the host did a full-wipe reset and reopened with a
-    // brand new roster. Without this check the device would sail past the
-    // !opened gate above (the room IS open again) and try to operate as a
-    // team that isn't there anymore. Bounce back to the landing screen instead.
+    // brand new roster. The claim check above already catches this in the
+    // common case (a wiped team's claim is gone too), but this stays as a
+    // second, independent check in case a team is ever removed from the
+    // roster without its claim key being cleared.
     const teams = await getTeams();
     if (!teams.some(t => t.id === teamId)) {
       await clearCachedRole();
@@ -4067,7 +4093,8 @@ var qrcode = function() {
 
     // §11.6: capacity is a soft budget now, not a hard ceiling the picker
     // enforces — but the number shown should still reflect crunch's boost
-    // live, so the "over budget" warning is accurate the moment it's ticked.
+    // live, so the color cue (see `over` in draw()) stays accurate the
+    // moment crunch is ticked. No explanatory text — the number is the signal.
     function effectiveCapacity(){ return CFG.capacity + carry + (local.crunch ? CFG.crunchGain : 0); }
 
     const pe = s => s.est;
@@ -4092,13 +4119,11 @@ var qrcode = function() {
         </div>
         <div class="si-card">
           <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-            <p class="si-eyebrow" style="margin:0;">Capacity committed</p>
+            <p class="si-eyebrow" style="margin:0;">Hour capacity</p>
             <p class="si-mono" style="margin:0; font-weight:600; color:${over ? 'var(--ember)' : 'var(--ink)'};">${t} / ${capacity}</p>
           </div>
           ${carry < 0 ? `<p style="color:var(--ember); font-size:0.8rem; margin:0 0 10px;">Crunch hangover from last round: −${-carry} capacity (normally ${CFG.capacity}).</p>` : ''}
           ${carry > 0 ? `<p style="color:var(--olive); font-size:0.8rem; margin:0 0 10px;">Carried in from leaving capacity unused last round: +${carry} capacity (normally ${CFG.capacity}).</p>` : ''}
-          ${over ? `<p style="color:var(--ember); font-size:0.8rem; margin:0 0 10px;">Over budget by ${t - capacity}. Nothing stops you — but whatever doesn't fit when the round resolves breaks a promise: partial credit instead of full, plus a penalty.</p>` : ''}
-          <p style="color:var(--fog); font-size:0.8rem; margin:0 0 14px;">Commit to whatever you want — capacity is a budget, not a wall. Tap a story to commit it; tap again to drop it.</p>
           <div class="si-team-list" id="si-backlog-list"></div>
         </div>
         <div class="si-card">
@@ -4133,9 +4158,13 @@ var qrcode = function() {
       list.innerHTML = avail.map(s => {
         const isSel = local.selected.has(s.id);
         const isSpiked = local.spikes.has(s.id);
-        // §11.6: this is a warning, not a gate — picking past budget is allowed.
-        const wouldExceed = !isSel && (t + pe(s) > capacity);
         const est = pe(s);
+        // Polish/linked drive curveball effects (pivot doubles polish value,
+        // integration discounts linked cost) but were never shown anywhere —
+        // a player had no way to tell which stories a curveball even applied
+        // to. Small tag here fixes that.
+        const tagText = s.polish ? 'polish' : (s.linked ? 'linked' : null);
+        const tagHtml = tagText ? ` · <span style="text-transform:uppercase; letter-spacing:0.03em; font-size:0.7rem;">${tagText}</span>` : '';
         // SPIKE (disabled): the toggle pill only renders while SPIKE_ENABLED —
         // a picked story just shows "picked" with no spike affordance.
         const right = isSel
@@ -4143,11 +4172,11 @@ var qrcode = function() {
                ${SPIKE_ENABLED ? `<span class="si-pill${isSpiked ? ' taken' : ''}" data-action="spike" data-story-id="${s.id}" style="cursor:pointer;">${isSpiked ? '🛡 safe' : 'spike +' + CFG.spikeCost}</span>` : ''}
                <span class="si-pill taken">picked</span>
              </span>`
-          : `<span class="si-pill${wouldExceed ? '' : ' open'}" style="${wouldExceed ? 'border-color:var(--ember);color:var(--ember);' : ''}">${wouldExceed ? 'over budget' : 'pick'}</span>`;
+          : `<span class="si-pill open">pick</span>`;
         return `<div class="si-team-row${isSel ? ' claimed' : ''}" data-action="pick" data-story-id="${s.id}">
           <span class="si-team-name" style="flex:1;">
             ${escapeHtml(s.name)}
-            <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · est ${est}</span>
+            <span style="color:var(--fog); font-weight:400; font-size:0.82rem;"> · value ${valueOf(s, null)} · ${est} hour${est===1?'':'s'}${tagHtml}</span>
           </span>
           ${right}
         </div>`;
@@ -4382,7 +4411,7 @@ var qrcode = function() {
       wire(); watchForRoundChange(); return;
     }
 
-    const bigScore = res.isFinal ? res.finalScore : res.cumScore;
+    const bigScore = Math.round(res.isFinal ? res.finalScore : res.cumScore);
     const autoNote = res.autoPicked
       ? `<div class="si-notice"><div class="si-notice-title">Auto-picked</div>No commitment came in before time ran out, so a default plan was chosen for you.</div>`
       : (res.timedOut ? `<div class="si-notice"><div class="si-notice-title">Locked in at the buzzer</div>Your in-progress plan was submitted when the timer hit zero.</div>` : '');
@@ -4401,7 +4430,7 @@ var qrcode = function() {
       : `<p style="color:var(--fog); font-size:0.9rem; margin:0;">Nothing shipped.</p>`;
 
     const extraBits = [
-      res.creditedBrokenValue ? `Partial credit for broken work: +${res.creditedBrokenValue.toFixed(1)}` : null,
+      res.creditedBrokenValue ? `Partial credit for broken work: +${Math.round(res.creditedBrokenValue)}` : null,
       res.crunched ? (res.crunchBug ? `Crunched — shipped a bug (−${CFG.crunchBugPenalty})` : 'Crunched for extra capacity') : null,
       (res.crunched && !res.isFinal && res.nextHangover) ? `Hangover next round: −${res.nextHangover} capacity (streak ${res.crunchStreak})` : null,
       res.slackSaved ? `Idle capacity saved you — absorbed ${res.slackSaved.absorbed} of overrun that would've broken a promise` : null,
@@ -4439,11 +4468,19 @@ var qrcode = function() {
   (async function boot() {
     await getDeviceId();
     const params = new URLSearchParams(window.location.search);
-    const wantsHost = params.get('role') === 'host';
+    // Backward compat: this session renamed facilitator -> host (§11.3). A
+    // device that already passed the PIN gate before that rename has
+    // role:'facilitator' cached in localStorage, and anyone with the old
+    // ?role=facilitator link bookmarked would otherwise silently lose host
+    // access — no error, just dropped to the normal landing screen, which
+    // is exactly what "host login is broken" looks like from the outside.
+    // Accept both spellings on read; every new write already uses 'host'.
+    const wantsHost = params.get('role') === 'host' || params.get('role') === 'facilitator';
     const cached = await getCachedRole();
+    const cachedIsHost = !!(cached && (cached.role === 'host' || cached.role === 'facilitator') && cached.pinPassed);
 
     if (wantsHost) {
-      if (cached && cached.role === 'host' && cached.pinPassed) {
+      if (cachedIsHost) {
         renderHostDashboard();
       } else {
         renderHostPinGate();
@@ -4451,7 +4488,7 @@ var qrcode = function() {
       return;
     }
 
-    if (cached && cached.role === 'host' && cached.pinPassed) {
+    if (cachedIsHost) {
       renderHostDashboard();
     } else if (cached && cached.role === 'team') {
       renderTeamEntry(cached.teamId, cached.teamName);
