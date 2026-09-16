@@ -359,6 +359,25 @@ html, body { height: 100%; margin: 0; }
   opacity: 0.6;
 }
 .si-dev-reset:hover { opacity: 1; }
+
+/* Big numbers (facilitator timer + committed count). Base size works on a
+   phone; projector mode scales them up below. */
+.si-bignum { font-size: 1.8rem; font-weight: 600; }
+
+/* Projector mode — added to #si-view only on the facilitator dashboard, and the
+   layout changes are gated to wide screens so a facilitator on a phone still
+   gets the plain mobile column. The leaderboard is the hero during results. */
+@media (min-width: 820px) {
+  #si-view.si-projector { max-width: 940px; }
+  .si-projector .si-header h1 { font-size: 2.9rem; }
+  .si-projector .si-bignum { font-size: 3.4rem; }
+  .si-projector #si-fac-results .si-eyebrow { font-size: 1.05rem; }
+  .si-projector #si-fac-results .si-team-name { font-size: 1.5rem; }
+  .si-projector #si-fac-results .si-team-row { padding: 18px 22px; }
+  .si-projector #si-fac-results .si-pill { font-size: 0.95rem; padding: 5px 14px; }
+  .si-projector #si-fac-team-list .si-team-name { font-size: 1.2rem; }
+  .si-projector #si-fac-team-list .si-pill { font-size: 0.82rem; }
+}
 </style>
 </head>
 <body>
@@ -2703,6 +2722,8 @@ var qrcode = function() {
   const DEVICE_ROLE_KEY = 'device:role';
   const POLL_MS = 2500;
   const FACILITATOR_PIN = '2358';
+  const TIMER_SECONDS = 180;        // default commit window per round; facilitator can +30s or resolve early
+  const TIMER_EXTEND_SECONDS = 30;  // "+30s" bump on the facilitator dashboard
 
   // ============================================================
   // Ship It — real engine (tuned v2, human-input port).
@@ -2787,6 +2808,39 @@ var qrcode = function() {
   function availableStories(completedAll){
     const done = new Set(completedAll || []);
     return BACKLOG.filter(s => !done.has(s.id));
+  }
+
+  // A legal default commitment for a team that runs out of time with nothing
+  // picked (timeout) or never opens the picker (no-show). Fills toward the
+  // release target by value-per-estimate, prefers lower-risk stories, and
+  // spikes any big-tier story it has to include so the fallback isn't sabotaged
+  // by a blowup. Not a guaranteed win — just legal and not deliberately bad,
+  // which is the whole point of replacing the harsh empty-commit auto-fail.
+  function autoPickCommit(state, roundIndex){
+    const s1Done = new Set(state.completedAll || []).has('S1');
+    const cap = CFG.capacity + (state.carry || 0);
+    const target = CFG.targets[roundIndex];
+    const ranked = availableStories(state.completedAll).map(s => {
+      const est = planEst(s, s1Done);
+      const tier = tierOf(tierEst(s, s1Done));
+      return { s, est, tier, density: valueOf(s, null) / Math.max(0.5, est) };
+    }).sort((a, b) =>
+      (a.tier === 'big' ? 1 : 0) - (b.tier === 'big' ? 1 : 0) || // non-big first (blowup risk)
+      b.density - a.density ||                                     // then most value per estimate
+      a.est - b.est                                               // then cheaper
+    );
+    const commitIds = [], spikeIds = [];
+    let usedEst = 0, plannedVal = 0;
+    for (const { s, est, tier } of ranked){
+      const addCost = est + (tier === 'big' ? CFG.spikeCost : 0);
+      if (usedEst + addCost > cap) continue;
+      commitIds.push(s.id);
+      usedEst += addCost;
+      plannedVal += valueOf(s, null);
+      if (tier === 'big') spikeIds.push(s.id);
+      if (plannedVal >= target) break; // enough planned value to clear the release
+    }
+    return { commitIds, spikeIds };
   }
 
   // Resolve one team's round from human inputs.
@@ -2890,6 +2944,7 @@ var qrcode = function() {
 
   let deviceId = null;
   let pollTimer = null;
+  let tickTimer = null;
   let currentScreen = null; // { name, teamId }
 
   const view = document.getElementById('si-view');
@@ -2993,6 +3048,7 @@ var qrcode = function() {
     state.opened = true;
     state.phase = 'COMMITTING';
     state.round = roundNum;
+    state.deadline = Date.now() + TIMER_SECONDS * 1000;
     await setRoomState(state);
     return state;
   }
@@ -3078,18 +3134,34 @@ var qrcode = function() {
 
     await Promise.all(teams.map(async (t, i) => {
       const sub = subs[i];
-      const autoFailed = !sub;
-      const commitIds = sub ? (sub.commitIds || []) : [];
-      const spikeIds  = sub ? (sub.spikeIds  || []) : [];
-      const crunch    = sub ? !!sub.crunch : false;
+      let commitIds, spikeIds, crunch, autoPicked = false, autoFailed = false, timedOut = false;
+      if (sub) {
+        commitIds  = sub.commitIds || [];
+        spikeIds   = sub.spikeIds  || [];
+        crunch     = !!sub.crunch;
+        autoPicked = !!sub.autoPicked;   // team timed out with nothing picked; the client auto-picked for them
+        timedOut   = !!sub.timedOut;     // team submitted at the buzzer
+      } else {
+        // No submission at all (never opened the picker / disconnected) — auto-pick
+        // a legal plan rather than the old empty-commit auto-fail.
+        const auto = autoPickCommit(states[i], roundIndex);
+        commitIds  = auto.commitIds;
+        spikeIds   = auto.spikeIds;
+        crunch     = false;
+        autoPicked = commitIds.length > 0;
+        autoFailed = commitIds.length === 0; // nothing left to auto-pick (degenerate)
+      }
       const { newState, log } = resolveTeamRound({ commitIds, spikeIds, crunch, cb, roundIndex, state: states[i] });
+      log.autoPicked = autoPicked;
       log.autoFailed = autoFailed;
+      log.timedOut = timedOut;
       await Promise.all([ setResult(t.id, round, log), setTeamState(t.id, newState) ]);
     }));
 
     roomState.phase = 'RESOLVED';
     roomState.round = round;
     roomState.lastCb = cb;
+    roomState.deadline = null;
     await setRoomState(roomState);
     return roomState;
   }
@@ -3100,6 +3172,16 @@ var qrcode = function() {
     const next = (state.round || 1) + 1;
     state.phase = 'COMMITTING';
     state.round = next;
+    state.deadline = Date.now() + TIMER_SECONDS * 1000;
+    await setRoomState(state);
+    return state;
+  }
+
+  // Push the shared deadline out (facilitator "+30s"). No-op unless committing.
+  async function extendDeadline(seconds) {
+    const state = await getRoomState();
+    if (!state || state.phase !== 'COMMITTING') return state;
+    state.deadline = Math.max(state.deadline || 0, Date.now()) + seconds * 1000;
     await setRoomState(state);
     return state;
   }
@@ -3122,7 +3204,9 @@ var qrcode = function() {
       const score = res ? rowScore(res) : 0;
       const tag = res && res.autoFailed
         ? '<span class="si-pill">no commit</span>'
-        : `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'}</span>`;
+        : (res && res.autoPicked
+            ? `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'} · auto</span>`
+            : `<span class="si-pill taken si-mono">${score} pt${score === 1 ? '' : 's'}</span>`);
       const missTag = (res && !res.autoFailed && !res.hitTarget) ? ' <span class="si-pill" style="border-color:var(--ember);color:var(--ember);">missed target</span>' : '';
       return `<div class="si-team-row si-team-row-fac">
         <span class="si-team-name">${i + 1}. ${escapeHtml(r.team.name)}</span>
@@ -3144,6 +3228,7 @@ var qrcode = function() {
         res.hitTarget ? (res.surplus ? `+${res.surplus} surplus` : 'target met') : `missed (−${res.miss})`,
         res.spikes.length ? `spike ×${res.spikes.length}` : null,
         res.crunched ? (res.crunchBug ? 'crunched (bug!)' : 'crunched') : null,
+        res.autoPicked ? 'auto-picked' : null,
         res.tokensOut ? `${res.tokensOut} slack tok` : null,
         (res.isFinal && res.combo) ? 'COMBO +' + CFG.comboBonus : null,
       ].filter(Boolean).join(' · ');
@@ -3194,8 +3279,13 @@ var qrcode = function() {
 
   // ---------- Polling ----------
 
+  function stopTicker() {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  }
+
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    stopTicker();
   }
 
   function startPolling(fn) {
@@ -3203,11 +3293,27 @@ var qrcode = function() {
     pollTimer = setInterval(fn, POLL_MS);
   }
 
+  // 1-second countdown loop, separate from the 2.5s data poll so a screen can run
+  // both. startPolling clears it, so any ticker-using screen calls startTicker
+  // AFTER startPolling. fn runs immediately then every second; each fn guards on
+  // currentScreen and stops itself when it no longer matches.
+  function startTicker(fn) {
+    stopTicker();
+    fn();
+    tickTimer = setInterval(fn, 1000);
+  }
+
+  function formatClock(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+
   // ---------- Screens ----------
 
   async function renderLanding() {
     stopPolling();
     currentScreen = { name: 'landing' };
+    view.classList.remove('si-projector');
     view.innerHTML = `
       <div class="si-header">
         <p class="si-eyebrow">Ship It — classroom room</p>
@@ -3226,6 +3332,7 @@ var qrcode = function() {
   function renderFacilitatorPinGate(errorMsg) {
     stopPolling();
     currentScreen = { name: 'facilitator-pin' };
+    view.classList.remove('si-projector');
     view.innerHTML = `
       <div class="si-header">
         <p class="si-eyebrow">Facilitator</p>
@@ -3297,6 +3404,7 @@ var qrcode = function() {
 
   async function renderFacilitatorDashboard() {
     currentScreen = { name: 'facilitator' };
+    view.classList.add('si-projector');
     const state = (await getRoomState()) || { phase: 'LOBBY', opened: false };
     const teams = await getTeams();
 
@@ -3307,6 +3415,24 @@ var qrcode = function() {
         <h1>${facilitatorHeadline(state)}</h1>
       </div>
 
+      ${state.phase === 'COMMITTING' ? `
+      <div class="si-card">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+          <div>
+            <p class="si-eyebrow" style="margin:0 0 2px;">Time left</p>
+            <p class="si-mono si-bignum" id="si-fac-timer" style="margin:0; line-height:1;">${formatClock((state.deadline || 0) - Date.now())}</p>
+          </div>
+          <div style="text-align:right;">
+            <p class="si-eyebrow" style="margin:0 0 2px;">Committed</p>
+            <p class="si-mono si-bignum" id="si-fac-submitted" style="margin:0; line-height:1;">0 / ${teams.length}</p>
+          </div>
+        </div>
+        <div class="si-actions" style="margin-top:14px;">
+          <button class="si-btn si-btn-secondary" id="si-add-time">+${TIMER_EXTEND_SECONDS}s</button>
+        </div>
+      </div>` : ''}
+
+      ${(state.phase !== 'COMMITTING' && state.phase !== 'RESOLVED') ? `
       <div class="si-card" style="text-align:center;">
         <p class="si-eyebrow" style="margin-bottom:12px;">Scan to join</p>
         <div id="si-join-qr" style="display:flex; justify-content:center; margin-bottom:10px;"></div>
@@ -3320,7 +3446,7 @@ var qrcode = function() {
           <input class="si-text-input" id="si-new-team-input" type="text" placeholder="Team name" maxlength="30" />
           <button class="si-btn si-btn-secondary" id="si-add-team-btn">Add</button>
         </div>
-      </div>
+      </div>` : ''}
 
       <div class="si-card">
         <p class="si-eyebrow" style="margin-bottom:12px;">Roster — <span class="si-mono">${teams.length}</span> team${teams.length === 1 ? '' : 's'}</p>
@@ -3342,36 +3468,43 @@ var qrcode = function() {
     document.getElementById('si-back').onclick = renderLanding;
 
     // Join link points at the plain room URL — no ?role=facilitator — so
-    // scanning it never exposes the facilitator entry to students.
+    // scanning it never exposes the facilitator entry to students. Only wired
+    // pre-game, when the join + add-team cards are actually rendered.
     const joinUrl = location.origin + location.pathname;
-    document.getElementById('si-join-url').textContent = joinUrl;
+    const joinUrlEl = document.getElementById('si-join-url');
     const qrHost = document.getElementById('si-join-qr');
-    try {
-      const qr = qrcode(0, 'M');
-      qr.addData(joinUrl);
-      qr.make();
-      qrHost.innerHTML = qr.createSvgTag({ scalable: true });
-      const svgEl = qrHost.querySelector('svg');
-      if (svgEl) { svgEl.style.width = '176px'; svgEl.style.height = '176px'; }
-    } catch (e) {
-      qrHost.innerHTML = `<p style="color:var(--fog); font-size:0.85rem;">QR unavailable — share the link above.</p>`;
-    }
-    document.getElementById('si-copy-link').onclick = async () => {
-      const btn = document.getElementById('si-copy-link');
+    if (joinUrlEl && qrHost) {
+      joinUrlEl.textContent = joinUrl;
       try {
-        await navigator.clipboard.writeText(joinUrl);
-        const prev = btn.textContent;
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = prev; }, 1500);
+        const qr = qrcode(0, 'M');
+        qr.addData(joinUrl);
+        qr.make();
+        qrHost.innerHTML = qr.createSvgTag({ scalable: true });
+        const svgEl = qrHost.querySelector('svg');
+        if (svgEl) { svgEl.style.width = '176px'; svgEl.style.height = '176px'; }
       } catch (e) {
-        alert('Could not copy automatically — select the link text above and copy it manually.');
+        qrHost.innerHTML = `<p style="color:var(--fog); font-size:0.85rem;">QR unavailable — share the link above.</p>`;
       }
-    };
+      document.getElementById('si-copy-link').onclick = async () => {
+        const btn = document.getElementById('si-copy-link');
+        try {
+          await navigator.clipboard.writeText(joinUrl);
+          const prev = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = prev; }, 1500);
+        } catch (e) {
+          alert('Could not copy automatically — select the link text above and copy it manually.');
+        }
+      };
+    }
 
-    document.getElementById('si-add-team-btn').onclick = onAddTeam;
-    document.getElementById('si-new-team-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') onAddTeam();
-    });
+    const addTeamBtn = document.getElementById('si-add-team-btn');
+    if (addTeamBtn) {
+      addTeamBtn.onclick = onAddTeam;
+      document.getElementById('si-new-team-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') onAddTeam();
+      });
+    }
 
     const startBtn = document.getElementById('si-start-room');
     if (startBtn) {
@@ -3430,6 +3563,24 @@ var qrcode = function() {
       const t = await getTeams();
       await refreshFacilitatorTeamList(t);
     });
+
+    if (state.phase === 'COMMITTING') {
+      let facDeadline = state.deadline || (Date.now() + TIMER_SECONDS * 1000);
+      const addBtn = document.getElementById('si-add-time');
+      if (addBtn) addBtn.onclick = async () => {
+        addBtn.disabled = true;
+        try { const ns = await extendDeadline(TIMER_EXTEND_SECONDS); if (ns && ns.deadline) facDeadline = ns.deadline; } catch (e) {}
+        addBtn.disabled = false;
+      };
+      startTicker(() => {
+        if (currentScreen.name !== 'facilitator') { stopTicker(); return; }
+        const el = document.getElementById('si-fac-timer');
+        if (!el) return;
+        const remaining = facDeadline - Date.now();
+        el.textContent = formatClock(remaining);
+        el.style.color = remaining <= 30000 ? 'var(--ember)' : 'var(--ink)';
+      });
+    }
   }
 
   async function onAddTeam() {
@@ -3444,26 +3595,44 @@ var qrcode = function() {
     renderFacilitatorDashboard();
   }
 
+  // During COMMITTING the roster shows who has submitted this round (and updates
+  // the #si-fac-submitted count) instead of sign-in claim status, so the
+  // facilitator can see when it's safe to resolve. Reads room state itself so
+  // every caller (poll, rename, add) stays correct without threading args.
   async function refreshFacilitatorTeamList(teams) {
     const list = document.getElementById('si-fac-team-list');
+    const countEl = document.getElementById('si-fac-submitted');
     if (!list) return;
 
     if (!teams.length) {
       list.innerHTML = `<div class="si-empty">No teams on the roster yet — add one above.</div>`;
+      if (countEl) countEl.textContent = `0 / 0`;
       return;
     }
 
-    const claims = await Promise.all(teams.map(t => getClaim(t.id)));
+    const room = await getRoomState();
+    const committing = !!(room && room.phase === 'COMMITTING');
+    const round = (room && room.round) || 1;
+
+    let pills;
+    if (committing) {
+      const subs = await Promise.all(teams.map(t => getRoundSubmission(t.id, round)));
+      if (countEl) countEl.textContent = `${subs.filter(Boolean).length} / ${teams.length}`;
+      pills = teams.map((t, i) => subs[i]
+        ? `<span class="si-pill taken">submitted</span>`
+        : `<span class="si-pill open">working…</span>`);
+    } else {
+      const claims = await Promise.all(teams.map(t => getClaim(t.id)));
+      pills = teams.map((t, i) => claims[i]
+        ? `<span class="si-pill taken">claimed</span>`
+        : `<span class="si-pill open">open</span>`);
+    }
 
     list.innerHTML = teams.map((t, i) => {
-      const claim = claims[i];
-      const pill = claim
-        ? `<span class="si-pill taken">claimed</span>`
-        : `<span class="si-pill open">open</span>`;
       return `<div class="si-team-row si-team-row-fac" data-team-id="${t.id}">
         <span class="si-team-name" data-role="name">${escapeHtml(t.name)}</span>
         <span class="si-fac-row-actions">
-          ${pill}
+          ${pills[i]}
           <button class="si-icon-btn" data-action="rename" title="Rename team">✎</button>
           <button class="si-icon-btn" data-action="remove" title="Remove team">✕</button>
         </span>
@@ -3528,6 +3697,7 @@ var qrcode = function() {
   async function renderTeamPicker() {
     currentScreen = { name: 'team-picker' };
     stopPolling();
+    view.classList.remove('si-projector');
     const state = await getRoomState();
     const teams = await getTeams();
 
@@ -3629,6 +3799,7 @@ var qrcode = function() {
 
   async function renderTeamEntry(teamId, teamName) {
     stopPolling();
+    view.classList.remove('si-projector');
     const state = await getRoomState();
 
     if (!state || state.phase === 'LOBBY' || !state.opened) {
@@ -3684,6 +3855,9 @@ var qrcode = function() {
 
     const st = await getTeamState(teamId);
     if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) return;
+    const room = await getRoomState();
+    if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) return;
+    let deadline = (room && room.deadline) || (Date.now() + TIMER_SECONDS * 1000);
     const s1Done = new Set(st.completedAll || []).has('S1');
     const avail = availableStories(st.completedAll);
     const capacity = CFG.capacity;
@@ -3702,6 +3876,7 @@ var qrcode = function() {
     function draw() {
       const t = used();
       view.innerHTML = `
+        <div class="si-status-row"><span class="si-status-dot"></span> Time left: <span class="si-mono" id="si-timer" style="font-weight:600; color:${(deadline - Date.now()) <= 30000 ? 'var(--ember)' : 'var(--ink)'};">${formatClock(deadline - Date.now())}</span></div>
         <div class="si-header">
           <p class="si-eyebrow">Round ${round} of ${CFG.targets.length} — commit</p>
           <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
@@ -3780,11 +3955,11 @@ var qrcode = function() {
       });
 
       document.getElementById('si-crunch-toggle').onclick = () => { local.crunch = !local.crunch; draw(); };
-      document.getElementById('si-submit-commit').onclick = submit;
+      document.getElementById('si-submit-commit').onclick = () => submit();
       document.getElementById('si-back').onclick = renderTeamPicker;
     }
 
-    async function submit() {
+    async function submit(flags) {
       if (local.submitting) return;
       local.submitting = true;
       draw();
@@ -3793,6 +3968,8 @@ var qrcode = function() {
         commitIds: Array.from(local.selected),
         spikeIds: Array.from(local.spikes),
         crunch: local.crunch,
+        timedOut: !!(flags && flags.timedOut),
+        autoPicked: !!(flags && flags.autoPicked),
         submittedAt: Date.now()
       };
       try {
@@ -3805,7 +3982,44 @@ var qrcode = function() {
       }
     }
 
+    // Timer hit zero: lock in whatever's picked. If nothing's picked, drop in a
+    // legal auto-pick so the team takes a real (if unchosen) result instead of
+    // eating the release miss.
+    function onTimeout() {
+      if (local.submitting) return;
+      if (local.selected.size > 0) {
+        submit({ timedOut: true });
+      } else {
+        const auto = autoPickCommit(st, round - 1);
+        local.selected = new Set(auto.commitIds);
+        local.spikes = new Set(auto.spikeIds);
+        submit({ timedOut: true, autoPicked: local.selected.size > 0 });
+      }
+    }
+
     draw();
+
+    startPolling(async () => {
+      if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) return;
+      const r = await getRoomState();
+      if (!r) return;
+      if (r.phase !== 'COMMITTING' || (r.round || 1) !== round) {
+        await renderTeamEntry(teamId, teamName); // facilitator resolved / advanced early
+        return;
+      }
+      if (r.deadline && r.deadline !== deadline) deadline = r.deadline; // picked up a +30s extension
+    });
+
+    startTicker(() => {
+      if (currentScreen.name !== 'team-commit' || currentScreen.teamId !== teamId) { stopTicker(); return; }
+      const remaining = deadline - Date.now();
+      const el = document.getElementById('si-timer');
+      if (el) {
+        el.textContent = formatClock(remaining);
+        el.style.color = remaining <= 30000 ? 'var(--ember)' : 'var(--ink)';
+      }
+      if (remaining <= 0) { stopTicker(); onTimeout(); }
+    });
   }
 
   function commitRowsHtml(commitIds, spikeIds) {
@@ -3818,19 +4032,30 @@ var qrcode = function() {
     }).join('');
   }
 
-  function renderTeamSubmitted(teamName, submission) {
+  async function renderTeamSubmitted(teamName, submission) {
     const teamId = submission.teamId;
     currentScreen = { name: 'team-submitted', teamId };
     stopPolling();
+    let deadline = null;
+    try { const r0 = await getRoomState(); if (r0) deadline = r0.deadline || null; } catch (e) {}
+    if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) return;
+
     startPolling(async () => {
       if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) return;
       const s = await getRoomState();
-      if (s && (s.phase === 'RESOLVED' || (s.phase === 'COMMITTING' && (s.round || 1) !== submission.round))) {
+      if (!s) return;
+      if (s.deadline) deadline = s.deadline;
+      if (s.phase === 'RESOLVED' || (s.phase === 'COMMITTING' && (s.round || 1) !== submission.round)) {
         await renderTeamEntry(teamId, teamName);
       }
     });
+
+    const lockedNote = submission.autoPicked
+      ? 'Time ran out before you picked — a default plan was locked in for you.'
+      : (submission.timedOut ? 'Locked in when the timer hit zero.' : 'Locked until the facilitator resolves the round.');
     const rows = commitRowsHtml(submission.commitIds, submission.spikeIds);
     view.innerHTML = `
+      <div class="si-status-row"><span class="si-status-dot"></span> Time left: <span class="si-mono" id="si-timer" style="font-weight:600;">—</span></div>
       <div class="si-header">
         <p class="si-eyebrow">Round ${submission.round} — submitted</p>
         <h1 class="si-you-are" style="font-size:1.6rem;">${escapeHtml(teamName)}</h1>
@@ -3843,9 +4068,18 @@ var qrcode = function() {
         ${submission.crunch ? `<p style="color:var(--fog); font-size:0.85rem; margin-top:14px;">Crunch: on.</p>` : ''}
       </div>
       <div class="si-footer-note">
-        <p style="color:var(--fog); font-size:0.8rem; margin:0;">Locked until the facilitator resolves the round.</p>
+        <p style="color:var(--fog); font-size:0.8rem; margin:0;">${lockedNote}</p>
       </div>
     `;
+
+    startTicker(() => {
+      if (currentScreen.name !== 'team-submitted' || currentScreen.teamId !== teamId) { stopTicker(); return; }
+      const el = document.getElementById('si-timer');
+      if (!el) return;
+      if (!deadline) { el.textContent = '—'; return; }
+      const remaining = deadline - Date.now();
+      el.textContent = remaining <= 0 ? 'time up' : formatClock(remaining);
+    });
   }
 
   // ---- Team results (round RESOLVED — shows only this team's own commitment) ----
@@ -3896,6 +4130,9 @@ var qrcode = function() {
     }
 
     const bigScore = res.isFinal ? res.finalScore : res.cumScore;
+    const autoNote = res.autoPicked
+      ? `<div class="si-notice"><div class="si-notice-title">Auto-picked</div>No commitment came in before time ran out, so a default plan was chosen for you.</div>`
+      : (res.timedOut ? `<div class="si-notice"><div class="si-notice-title">Locked in at the buzzer</div>Your in-progress plan was submitted when the timer hit zero.</div>` : '');
     const targetPill = res.hitTarget
       ? `<span class="si-pill open">shipped ${res.shipped} / ${res.target} ✓${res.surplus ? ' · +' + res.surplus + ' surplus' : ''}</span>`
       : `<span class="si-pill" style="border-color:var(--ember);color:var(--ember);">shipped ${res.shipped} / ${res.target} · missed −${res.miss}</span>`;
@@ -3919,7 +4156,7 @@ var qrcode = function() {
     ].filter(Boolean);
     const extraLine = extraBits.length ? `<p style="color:var(--fog); font-size:0.82rem; margin:10px 0 0;">${extraBits.map(escapeHtml).join('<br>')}</p>` : '';
 
-    view.innerHTML = header + `
+    view.innerHTML = header + autoNote + `
       <div class="si-card" style="text-align:center;">
         ${cbLine}
         <p class="si-eyebrow" style="margin-bottom:2px;">${res.isFinal ? 'Final score' : 'Score so far'}</p>
